@@ -12,6 +12,18 @@ import { workflowsRouter } from "./routes/workflows";
 import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
+import { authRouter } from "./routes/auth";
+
+// Safety net: Express 4 does not catch rejections thrown inside async route
+// handlers, and Node crashes on an unhandled rejection. Log and keep the server
+// alive (e.g. a transient DB outage should degrade requests, not kill the
+// process) rather than taking the whole backend down for one failed request.
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] unhandled promise rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[server] uncaught exception:", err);
+});
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -84,6 +96,13 @@ const dataDeleteLimiter = makeLimiter({
   message: "Too many data deletion requests. Please try again later.",
 });
 
+// Tighter limit on login to blunt password brute-forcing.
+const loginLimiter = makeLimiter({
+  windowMs: minutes(envInt("RATE_LIMIT_LOGIN_WINDOW_MINUTES", 15)),
+  max: envInt("RATE_LIMIT_LOGIN_MAX", 20),
+  message: "Too many login attempts. Please try again later.",
+});
+
 function jsonLimitForPath(path: string): string {
   return "50mb";
 }
@@ -140,6 +159,7 @@ app.delete("/user/account", dataDeleteLimiter);
 app.delete("/user/chats", dataDeleteLimiter);
 app.delete("/user/projects", dataDeleteLimiter);
 app.delete("/user/tabular-reviews", dataDeleteLimiter);
+app.post("/auth/login", loginLimiter);
 
 app.use((req, res, next) =>
   express.json({ limit: jsonLimitForPath(req.path) })(req, res, next),
@@ -155,6 +175,7 @@ app.use("/user", userRouter);
 app.use("/users", userRouter);
 app.use("/download", downloadsRouter);
 app.use("/case-law", caseLawRouter);
+app.use("/auth", authRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 

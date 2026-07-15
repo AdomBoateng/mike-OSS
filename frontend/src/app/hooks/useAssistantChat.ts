@@ -99,6 +99,47 @@ export function useAssistantChat({
 
   const eventsRef = useRef<AssistantEvent[]>([]);
 
+  // Streaming deltas (content/reasoning tokens) can arrive far faster than
+  // React can commit — a reasoning model emits hundreds per turn. Mirroring the
+  // event buffer into message state on every single delta floods React with
+  // synchronous commits and, together with effects that re-run on each
+  // `messages` change, can trip its "Maximum update depth exceeded" guard.
+  // Coalesce those high-frequency updates to at most one per animation frame;
+  // structural events (tool calls, doc events, errors, completion) still flush
+  // immediately via their own setMessages.
+  const flushRafRef = useRef<number | null>(null);
+
+  const writeEventsToLastAssistant = () => {
+    const snapshot = [...eventsRef.current];
+    setMessages((prev) => {
+      const updated = [...prev];
+      const last = updated[updated.length - 1];
+      if (last?.role === "assistant") {
+        updated[updated.length - 1] = { ...last, events: snapshot };
+      }
+      return updated;
+    });
+  };
+
+  const scheduleEventsFlush = () => {
+    if (flushRafRef.current != null) return;
+    flushRafRef.current = requestAnimationFrame(() => {
+      flushRafRef.current = null;
+      writeEventsToLastAssistant();
+    });
+  };
+
+  // Cancel any pending coalesced flush and mirror the buffer immediately, so a
+  // terminal state (finalize, cancel, error) commits synchronously rather than
+  // waiting on — or being clobbered by — a queued frame.
+  const flushEventsToMessages = () => {
+    if (flushRafRef.current != null) {
+      cancelAnimationFrame(flushRafRef.current);
+      flushRafRef.current = null;
+    }
+    writeEventsToLastAssistant();
+  };
+
   /**
    * Finalize any in-flight streaming content event so the next
    * content_delta starts a fresh block. Called
@@ -181,6 +222,10 @@ export function useAssistantChat({
   const cancel = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+      if (flushRafRef.current != null) {
+        cancelAnimationFrame(flushRafRef.current);
+        flushRafRef.current = null;
+      }
       const snapshot = cancelStreamingEvents(eventsRef.current);
       eventsRef.current = snapshot;
       setMessages((prev) => {
@@ -450,18 +495,7 @@ export function useAssistantChat({
                     isStreaming: true,
                   },
                 ];
-                const snapshot = [...eventsRef.current];
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last?.role === "assistant") {
-                    updated[updated.length - 1] = {
-                      ...last,
-                      events: snapshot,
-                    };
-                  }
-                  return updated;
-                });
+                scheduleEventsFlush();
               } else {
                 const nextEvents = [...events];
                 nextEvents[nextEvents.length - 1] = {
@@ -470,18 +504,7 @@ export function useAssistantChat({
                   isStreaming: true,
                 };
                 eventsRef.current = nextEvents;
-                const snapshot = [...nextEvents];
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last?.role === "assistant") {
-                    updated[updated.length - 1] = {
-                      ...last,
-                      events: snapshot,
-                    };
-                  }
-                  return updated;
-                });
+                scheduleEventsFlush();
               }
               continue;
             }
@@ -515,18 +538,7 @@ export function useAssistantChat({
                   },
                 ];
               }
-              const snapshot = [...eventsRef.current];
-              setMessages((prev) => {
-                const updated = [...prev];
-                const last = updated[updated.length - 1];
-                if (last?.role === "assistant") {
-                  updated[updated.length - 1] = {
-                    ...last,
-                    events: snapshot,
-                  };
-                }
-                return updated;
-              });
+              scheduleEventsFlush();
               continue;
             }
 
@@ -1144,6 +1156,9 @@ export function useAssistantChat({
       }
 
       finalizeStreamingReasoning();
+      // Commit any tokens still buffered in a pending coalesced frame so the
+      // final message is complete the moment streaming ends.
+      flushEventsToMessages();
       setIsResponseLoading(false);
       setIsLoadingCitations(false);
 
@@ -1179,6 +1194,12 @@ export function useAssistantChat({
 
       return streamedChatId || null;
     } catch (error: unknown) {
+      // Drop any queued coalesced flush so it can't overwrite the terminal
+      // (cancelled / error) state a frame later.
+      if (flushRafRef.current != null) {
+        cancelAnimationFrame(flushRafRef.current);
+        flushRafRef.current = null;
+      }
       if (error instanceof Error && error.name === "AbortError") {
         finalizeStreamingContent();
         finalizeStreamingReasoning();

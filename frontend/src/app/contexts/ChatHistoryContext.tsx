@@ -128,6 +128,7 @@ export function ChatHistoryProvider({ children }: { children: ReactNode }) {
                     user_id: user?.id ?? "",
                     title: null,
                     created_at: now,
+                    updated_at: now,
                 };
                 setChats((prev) => [newChat, ...(prev ?? [])]);
                 return id;

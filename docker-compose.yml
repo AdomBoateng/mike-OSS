@@ -1,0 +1,68 @@
+# Local infrastructure for self-hosted Mike.
+#
+# Spin up:        docker compose up -d
+# Spin up + mail: docker compose --profile mail up -d   (adds Mailpit, see below)
+# Logs:           docker compose logs -f postgres
+# Reset DB:       docker compose down -v   (drops the volume so init scripts re-run)
+#
+# On first start (empty volume) Postgres runs, in alphabetical order, every
+# file mounted into /docker-entrypoint-initdb.d:
+#   00-auth-shim.sql  — minimal auth.users so the Supabase-authored schema loads
+#   01-schema.sql     — the application schema (backend/schema.sql, unmodified)
+# These run ONCE, creating every table, function and trigger the app needs. To
+# rebuild from scratch (e.g. after editing schema.sql): `docker compose down -v`
+# then `docker compose up -d`.
+#
+# To bootstrap a database that is NOT this container (an existing Postgres you
+# point DATABASE_URL at), run the same two files in order, once, against it:
+#   psql "$DATABASE_URL" -f backend/db/initdb/00-auth-shim.sql
+#   psql "$DATABASE_URL" -f backend/schema.sql
+#
+# LDAP is NOT part of this stack — it is an external directory (see the LDAP
+# config file in the repo root); the app connects to it over the network.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: mike-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mike
+      POSTGRES_PASSWORD: mike_local_dev
+      POSTGRES_DB: mike
+    ports:
+      # host:container. Host port is 5433 to avoid clashing with a native
+      # Postgres install that may already own 5432. DATABASE_URL uses 5433.
+      - "5433:5432"
+    volumes:
+      - mike_pgdata:/var/lib/postgresql/data
+      - ./backend/db/initdb/00-auth-shim.sql:/docker-entrypoint-initdb.d/00-auth-shim.sql:ro
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mike -d mike"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Local catch-all SMTP server for testing project-invitation emails without a
+  # real relay. Opt-in: only starts with `docker compose --profile mail up -d`.
+  #   - SMTP endpoint for the backend:  localhost:1025
+  #   - Web inbox to view captured mail: http://localhost:8025
+  # Point the backend at it by setting in backend/.env:
+  #   SMTP_HOST=localhost
+  #   SMTP_PORT=1025
+  #   SMTP_SECURE=false
+  #   SMTP_FROM=Mike <no-reply@mike.local>
+  # mailpit:
+  #   image: axllent/mailpit:latest
+  #   container_name: mike-mailpit
+  #   profiles: ["mail"]
+  #   restart: unless-stopped
+  #   ports:
+  #     - "1025:1025" # SMTP
+  #     - "8025:8025" # web UI
+  #   environment:
+  #     MP_MAX_MESSAGES: 500
+
+volumes:
+  mike_pgdata:

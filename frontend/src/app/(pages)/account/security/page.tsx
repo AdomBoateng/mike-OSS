@@ -8,62 +8,29 @@ import {
     type KeyboardEvent,
 } from "react";
 import { Copy, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/contexts/AuthContext";
 import { useUserProfile } from "@/contexts/UserProfileContext";
-import { isMfaRequiredError } from "@/app/lib/mikeApi";
+import {
+    enrollMfa,
+    getMfaStatus,
+    isMfaRequiredError,
+    unenrollMfa,
+    verifyMfaEnrollment,
+} from "@/app/lib/mikeApi";
 import { Modal } from "@/app/components/shared/Modal";
 import {
     MfaVerificationPopup,
     needsMfaVerification,
 } from "@/app/components/shared/MfaVerificationPopup";
-import {
-    accountGlassPrimaryButtonClassName,
-} from "../accountStyles";
+import { accountGlassPrimaryButtonClassName } from "../accountStyles";
 import { AccountSection } from "../AccountSection";
 import { AccountToggle } from "../AccountToggle";
 
-type MfaFactor = {
-    id: string;
-    friendly_name?: string | null;
-    factor_type: string;
-    status?: string;
-};
-
 type Enrollment = {
-    factorId: string;
-    challengeId: string;
     qrCode: string;
     secret: string;
 };
-
-const isDev = process.env.NODE_ENV !== "production";
-const traceMfa = (...args: Parameters<typeof console.info>) => {
-    if (isDev) console.info(...args);
-};
-
-function summarizeFactors(factors: MfaFactor[]) {
-    return factors.map((factor) => ({
-        type: factor.factor_type,
-        status: factor.status ?? "unknown",
-        friendlyName: factor.friendly_name ?? null,
-    }));
-}
-
-function isDuplicateFriendlyNameError(error: unknown) {
-    const message =
-        error instanceof Error
-            ? error.message
-            : typeof error === "object" &&
-                error !== null &&
-                "message" in error &&
-                typeof error.message === "string"
-              ? error.message
-              : "";
-    return message
-        .toLowerCase()
-        .includes("a factor with the friendly name");
-}
 
 function VerificationCodeInput({
     value,
@@ -132,9 +99,7 @@ function VerificationCodeInput({
                     autoComplete={index === 0 ? "one-time-code" : "off"}
                     value={digit}
                     disabled={disabled}
-                    onChange={(event) =>
-                        updateDigit(index, event.target.value)
-                    }
+                    onChange={(event) => updateDigit(index, event.target.value)}
                     onPaste={handlePaste}
                     onKeyDown={(event) => handleKeyDown(event, index)}
                     className="h-11 w-10 rounded-lg border border-transparent bg-gray-100 text-center text-lg font-medium text-gray-950 shadow-none outline-none transition-colors focus:border-gray-200 focus:ring-2 focus:ring-gray-300/45 disabled:cursor-not-allowed disabled:opacity-45"
@@ -167,11 +132,11 @@ function MfaSettingsSkeleton() {
 }
 
 export default function SecurityPage() {
+    const { applySessionToken } = useAuth();
     const { profile, updateMfaOnLogin } = useUserProfile();
     const [loading, setLoading] = useState(true);
-    const [factors, setFactors] = useState<MfaFactor[]>([]);
-    const [currentLevel, setCurrentLevel] = useState<string | null>(null);
-    const [nextLevel, setNextLevel] = useState<string | null>(null);
+    const [hasVerifiedFactor, setHasVerifiedFactor] = useState(false);
+    const [sessionVerified, setSessionVerified] = useState(false);
     const [setupModalOpen, setSetupModalOpen] = useState(false);
     const [enrollment, setEnrollment] = useState<Enrollment | null>(null);
     const [verificationCode, setVerificationCode] = useState("");
@@ -179,9 +144,7 @@ export default function SecurityPage() {
     const [status, setStatus] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [savingLoginPreference, setSavingLoginPreference] = useState(false);
-    const [pendingUnenrollFactorId, setPendingUnenrollFactorId] = useState<
-        string | null
-    >(null);
+    const [pendingUnenroll, setPendingUnenroll] = useState(false);
     const [pendingLoginPreference, setPendingLoginPreference] = useState<
         boolean | null
     >(null);
@@ -189,104 +152,32 @@ export default function SecurityPage() {
     async function refreshMfaState() {
         setLoading(true);
         setStatus(null);
-        traceMfa("[security/mfa] refreshing state");
-        const [factorResult, aalResult] = await Promise.all([
-            supabase.auth.mfa.listFactors(),
-            supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
-        ]);
-
-        if (factorResult.error) {
-            traceMfa("[security/mfa] list factors failed", {
-                error: factorResult.error.message,
-            });
-            setStatus(factorResult.error.message);
-            setFactors([]);
-        } else {
-            const verifiedTotp = (factorResult.data.totp ?? []) as MfaFactor[];
-            const allFactors = (factorResult.data.all ?? []) as MfaFactor[];
-            traceMfa("[security/mfa] factors loaded", {
-                allCount: allFactors.length,
-                verifiedTotpCount: verifiedTotp.length,
-                all: summarizeFactors(allFactors),
-            });
-            setFactors(verifiedTotp);
+        try {
+            const state = await getMfaStatus();
+            setHasVerifiedFactor(state.enrolled);
+            setSessionVerified(state.sessionVerified);
+        } catch (error) {
+            setStatus(
+                error instanceof Error
+                    ? error.message
+                    : "Failed to load authenticator status.",
+            );
+            setHasVerifiedFactor(false);
+        } finally {
+            setLoading(false);
         }
-
-        if (aalResult.error) {
-            traceMfa("[security/mfa] assurance lookup failed", {
-                error: aalResult.error.message,
-            });
-            setStatus(aalResult.error.message);
-            setCurrentLevel(null);
-            setNextLevel(null);
-        } else {
-            traceMfa("[security/mfa] assurance level", {
-                currentLevel: aalResult.data.currentLevel,
-                nextLevel: aalResult.data.nextLevel,
-            });
-            setCurrentLevel(aalResult.data.currentLevel);
-            setNextLevel(aalResult.data.nextLevel);
-        }
-        setLoading(false);
     }
 
     useEffect(() => {
-        traceMfa("[security/mfa] page mounted");
         void refreshMfaState();
     }, []);
-
-    useEffect(() => {
-        traceMfa("[security/mfa] rendered state", {
-            loading,
-            verifiedFactorCount: factors.length,
-            currentLevel,
-            nextLevel,
-            hasEnrollment: !!enrollment,
-        });
-    }, [currentLevel, enrollment, factors.length, loading, nextLevel]);
 
     async function startEnrollment() {
         setBusy(true);
         setStatus(null);
         try {
-            traceMfa("[security/mfa] enrollment requested");
-
-            let { data, error } = await supabase.auth.mfa.enroll({
-                factorType: "totp",
-                friendlyName: "Mike",
-            });
-            if (error && isDuplicateFriendlyNameError(error)) {
-                traceMfa("[security/mfa] retrying enrollment with unique name", {
-                    error: error.message,
-                });
-                const retry = await supabase.auth.mfa.enroll({
-                    factorType: "totp",
-                    friendlyName: `Mike ${Date.now()}`,
-                });
-                data = retry.data;
-                error = retry.error;
-            }
-            if (error) throw error;
-            if (!data) throw new Error("Failed to start MFA setup.");
-            traceMfa("[security/mfa] enrollment created", {
-                factorId: data.id,
-            });
-
-            const challenge = await supabase.auth.mfa.challenge({
-                factorId: data.id,
-            });
-            if (challenge.error) throw challenge.error;
-            traceMfa("[security/mfa] enrollment challenge created", {
-                factorId: data.id,
-                challengeId: challenge.data.id,
-            });
-
-            setEnrollment({
-                factorId: data.id,
-                challengeId: challenge.data.id,
-                qrCode: data.totp.qr_code,
-                secret: data.totp.secret,
-            });
+            const data = await enrollMfa();
+            setEnrollment({ qrCode: data.qrCode, secret: data.secret });
             setVerificationCode("");
             setSetupKeyCopied(false);
         } catch (error) {
@@ -300,20 +191,19 @@ export default function SecurityPage() {
         }
     }
 
-    async function closeSetupModal() {
+    function closeSetupModal() {
         if (busy) return;
         setSetupModalOpen(false);
-        if (enrollment) {
-            await cancelEnrollment();
-        } else {
-            setVerificationCode("");
-            setSetupKeyCopied(false);
-        }
+        setEnrollment(null);
+        setVerificationCode("");
+        setSetupKeyCopied(false);
     }
 
-    async function returnToSetupInstructions() {
-        if (busy || !enrollment) return;
-        await cancelEnrollment();
+    function returnToSetupInstructions() {
+        if (busy) return;
+        setEnrollment(null);
+        setVerificationCode("");
+        setSetupKeyCopied(false);
     }
 
     async function verifyEnrollment() {
@@ -322,20 +212,8 @@ export default function SecurityPage() {
         setBusy(true);
         setStatus(null);
         try {
-            traceMfa("[security/mfa] verifying enrollment", {
-                factorId: enrollment.factorId,
-                challengeId: enrollment.challengeId,
-            });
-            const { error } = await supabase.auth.mfa.verify({
-                factorId: enrollment.factorId,
-                challengeId: enrollment.challengeId,
-                code: verificationCode.trim(),
-            });
-            if (error) throw error;
-            traceMfa("[security/mfa] enrollment verified", {
-                factorId: enrollment.factorId,
-            });
-
+            const token = await verifyMfaEnrollment(verificationCode.trim());
+            applySessionToken(token);
             setEnrollment(null);
             setSetupModalOpen(false);
             setVerificationCode("");
@@ -353,17 +231,6 @@ export default function SecurityPage() {
         }
     }
 
-    async function cancelEnrollment() {
-        const factorId = enrollment?.factorId;
-        setEnrollment(null);
-        setVerificationCode("");
-        setSetupKeyCopied(false);
-        if (factorId) {
-            await supabase.auth.mfa.unenroll({ factorId }).catch(() => null);
-        }
-        await refreshMfaState();
-    }
-
     async function copySetupKey() {
         if (!enrollment?.secret) return;
         await navigator.clipboard.writeText(enrollment.secret);
@@ -371,46 +238,34 @@ export default function SecurityPage() {
         window.setTimeout(() => setSetupKeyCopied(false), 1600);
     }
 
-    async function requestUnenroll(factorId: string) {
+    async function requestUnenroll() {
         setStatus(null);
-        const { data, error } =
-            await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-        if (error) {
-            setStatus(error.message);
-            return;
-        }
-
-        if (data.nextLevel === "aal2" && data.currentLevel !== "aal2") {
-            setPendingUnenrollFactorId(factorId);
-            return;
-        }
-
-        await unenrollFactor(factorId);
+        await unenrollFactor();
     }
 
-    async function unenrollFactor(factorId: string) {
+    async function unenrollFactor() {
         setBusy(true);
         setStatus(null);
-        const { error } = await supabase.auth.mfa.unenroll({ factorId });
-        setBusy(false);
-
-        if (error) {
-            if (
-                error.message.toLowerCase().includes("aal") ||
-                error.code === "insufficient_aal"
-            ) {
-                setPendingUnenrollFactorId(factorId);
+        try {
+            await unenrollMfa();
+            if (profile?.mfaOnLogin) {
+                void updateMfaOnLogin(false);
+            }
+            setStatus("MFA disabled.");
+            await refreshMfaState();
+        } catch (error) {
+            if (isMfaRequiredError(error)) {
+                setPendingUnenroll(true);
                 return;
             }
-            setStatus(error.message);
-            return;
+            setStatus(
+                error instanceof Error
+                    ? error.message
+                    : "Failed to remove authenticator app.",
+            );
+        } finally {
+            setBusy(false);
         }
-
-        setStatus("MFA disabled.");
-        if (profile?.mfaOnLogin) {
-            void updateMfaOnLogin(false);
-        }
-        await refreshMfaState();
     }
 
     async function handleLoginPreferenceToggle() {
@@ -458,8 +313,6 @@ export default function SecurityPage() {
         }
     }
 
-    const hasVerifiedFactor = factors.length > 0;
-    const sessionVerified = currentLevel === "aal2";
     const loginMfaEnabled = profile?.mfaOnLogin === true;
 
     return (
@@ -550,11 +403,9 @@ export default function SecurityPage() {
                                         <button
                                             type="button"
                                             onClick={() =>
-                                                void requestUnenroll(
-                                                    factors[0]?.id,
-                                                )
+                                                void requestUnenroll()
                                             }
-                                            disabled={busy || !factors[0]?.id}
+                                            disabled={busy}
                                             className="text-xs font-medium text-red-600 transition-colors hover:text-red-700 disabled:cursor-not-allowed disabled:text-red-300"
                                         >
                                             Remove authenticator app
@@ -577,13 +428,13 @@ export default function SecurityPage() {
             </section>
             <Modal
                 open={setupModalOpen}
-                onClose={() => void closeSetupModal()}
+                onClose={() => closeSetupModal()}
                 title="Set up authenticator app"
                 cancelAction={{
                     label: enrollment ? "Back" : "Cancel",
                     onClick: enrollment
-                        ? () => void returnToSetupInstructions()
-                        : () => void closeSetupModal(),
+                        ? () => returnToSetupInstructions()
+                        : () => closeSetupModal(),
                     disabled: busy,
                 }}
                 primaryAction={
@@ -680,12 +531,11 @@ export default function SecurityPage() {
                 </div>
             </Modal>
             <MfaVerificationPopup
-                open={!!pendingUnenrollFactorId}
-                onCancel={() => setPendingUnenrollFactorId(null)}
+                open={pendingUnenroll}
+                onCancel={() => setPendingUnenroll(false)}
                 onVerified={() => {
-                    const factorId = pendingUnenrollFactorId;
-                    setPendingUnenrollFactorId(null);
-                    if (factorId) void unenrollFactor(factorId);
+                    setPendingUnenroll(false);
+                    void unenrollFactor();
                 }}
             />
             <MfaVerificationPopup

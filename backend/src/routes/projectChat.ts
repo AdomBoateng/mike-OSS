@@ -87,13 +87,23 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
 
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (lastUser) {
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "user",
-            content: lastUser.content,
-            files: lastUser.files ?? null,
-            workflow: lastUser.workflow ?? null,
-        });
+        const { error: userInsertError } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "user",
+                content: lastUser.content,
+                files: lastUser.files ?? null,
+                workflow: lastUser.workflow ?? null,
+            });
+        // Surface persistence failures — a silent drop here is what left
+        // user turns missing from reloaded transcripts.
+        if (userInsertError) {
+            console.error(
+                "[projectChat/stream] failed to persist user message",
+                userInsertError,
+            );
+        }
     }
 
     const { docIndex, docStore, folderPaths } = await buildProjectDocContext(

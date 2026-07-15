@@ -66,6 +66,8 @@ export interface Chat {
   creator_display_name?: string | null;
   title: string | null;
   created_at: string;
+  /** Time of the most recent message — when the session was last used. */
+  updated_at?: string;
 }
 
 export interface EditAnnotation {

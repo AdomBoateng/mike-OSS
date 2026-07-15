@@ -1,12 +1,16 @@
 /**
- * Cloudflare R2 storage utilities for Mike document management.
- * R2 is S3-compatible — uses @aws-sdk/client-s3.
+ * S3-compatible object storage utilities for Mike document management.
+ * Works with any S3-compatible backend (self-hosted MinIO / "surf", AWS S3,
+ * Cloudflare R2) via @aws-sdk/client-s3.
  *
- * Required env vars:
- *   R2_ENDPOINT_URL     — https://<account-id>.r2.cloudflarestorage.com
- *   R2_ACCESS_KEY_ID    — R2 API token (Access Key ID)
- *   R2_SECRET_ACCESS_KEY — R2 API token (Secret Access Key)
- *   R2_BUCKET_NAME      — bucket name (default: "mike")
+ * Config is read from S3_* env vars, falling back to the legacy R2_* names for
+ * backward compatibility (see resolveStorageConfig):
+ *   S3_ENDPOINT_URL      — e.g. https://s3.example.internal (or an R2 endpoint)
+ *   S3_ACCESS_KEY_ID     — access key id
+ *   S3_SECRET_ACCESS_KEY — secret access key
+ *   S3_BUCKET_NAME       — bucket name (default: "mike")
+ *   S3_REGION            — region (default: "auto")
+ *   S3_FORCE_PATH_STYLE  — "false" for virtual-hosted style (default: path-style)
  */
 
 import {
@@ -20,35 +24,94 @@ import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const GetObjectCommand = (S3Commands as any).GetObjectCommand;
 
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+/** Return the first non-empty, trimmed env var among `names`. */
+function envValue(...names: string[]): string | undefined {
+  for (const name of names) {
+    const v = process.env[name]?.trim();
+    if (v) return v;
+  }
+  return undefined;
+}
+
+export interface StorageConfig {
+  endpoint: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+  region: string;
+  forcePathStyle: boolean;
+}
+
+/**
+ * Resolve storage configuration from the environment. Prefers S3_* names and
+ * falls back to the legacy R2_* names. Returns null when any required field is
+ * missing (i.e. storage is not configured). Read lazily so config changes and
+ * tests take effect without re-importing the module.
+ */
+export function resolveStorageConfig(): StorageConfig | null {
+  const endpoint = envValue("S3_ENDPOINT_URL", "R2_ENDPOINT_URL");
+  const accessKeyId = envValue("S3_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID");
+  const secretAccessKey = envValue(
+    "S3_SECRET_ACCESS_KEY",
+    "R2_SECRET_ACCESS_KEY",
+  );
+  if (!endpoint || !accessKeyId || !secretAccessKey) return null;
+  return {
+    endpoint,
+    accessKeyId,
+    secretAccessKey,
+    bucket: envValue("S3_BUCKET_NAME", "R2_BUCKET_NAME") ?? "mike",
+    region: envValue("S3_REGION", "R2_REGION") ?? "auto",
+    forcePathStyle:
+      (envValue("S3_FORCE_PATH_STYLE", "R2_FORCE_PATH_STYLE") ?? "true") !==
+      "false",
+  };
+}
+
+export function isStorageEnabled(): boolean {
+  return resolveStorageConfig() !== null;
+}
+
+function bucketName(): string {
+  return resolveStorageConfig()?.bucket ?? "mike";
+}
+
 let cachedClient: S3Client | undefined;
 
 function getClient(): S3Client {
   if (!cachedClient) {
+    const config = resolveStorageConfig();
+    if (!config) {
+      throw new Error(
+        "Storage is not configured: set S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, and S3_SECRET_ACCESS_KEY (legacy R2_* names also accepted)",
+      );
+    }
     cachedClient = new S3Client({
-      region: "auto",
-      endpoint: process.env.R2_ENDPOINT_URL!,
-      forcePathStyle: true,
+      region: config.region,
+      endpoint: config.endpoint,
+      forcePathStyle: config.forcePathStyle,
       credentials: {
-        accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
       },
     });
   }
   return cachedClient;
 }
 
-const BUCKET = process.env.R2_BUCKET_NAME ?? "mike";
-
-export const storageEnabled = Boolean(
-  process.env.R2_ENDPOINT_URL &&
-  process.env.R2_ACCESS_KEY_ID &&
-  process.env.R2_SECRET_ACCESS_KEY,
-);
+/** Reset the cached S3 client so the next call rebuilds it from current env. */
+export function resetStorageClient(): void {
+  cachedClient = undefined;
+}
 
 function requireStorageConfig(): void {
-  if (!storageEnabled) {
+  if (!isStorageEnabled()) {
     throw new Error(
-      "R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY must be set",
+      "Storage is not configured: set S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, and S3_SECRET_ACCESS_KEY (legacy R2_* names also accepted)",
     );
   }
 }
@@ -66,7 +129,7 @@ export async function uploadFile(
   const client = getClient();
   await client.send(
     new PutObjectCommand({
-      Bucket: BUCKET,
+      Bucket: bucketName(),
       Key: key,
       Body: Buffer.from(content),
       ContentType: contentType,
@@ -79,11 +142,11 @@ export async function uploadFile(
 // ---------------------------------------------------------------------------
 
 export async function downloadFile(key: string): Promise<ArrayBuffer | null> {
-  if (!storageEnabled) return null;
+  if (!isStorageEnabled()) return null;
   try {
     const client = getClient();
     const response = (await client.send(
-      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
+      new GetObjectCommand({ Bucket: bucketName(), Key: key }),
     )) as any;
     if (!response.Body) return null;
     const bytes = await response.Body.transformToByteArray();
@@ -94,14 +157,14 @@ export async function downloadFile(key: string): Promise<ArrayBuffer | null> {
 }
 
 export async function listFiles(prefix: string): Promise<string[]> {
-  if (!storageEnabled) return [];
+  if (!isStorageEnabled()) return [];
   const client = getClient();
   const keys: string[] = [];
   let ContinuationToken: string | undefined;
   do {
     const response = await client.send(
       new ListObjectsV2Command({
-        Bucket: BUCKET,
+        Bucket: bucketName(),
         Prefix: prefix,
         ContinuationToken,
       }),
@@ -119,9 +182,9 @@ export async function listFiles(prefix: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 export async function deleteFile(key: string): Promise<void> {
-  if (!storageEnabled) return;
+  if (!isStorageEnabled()) return;
   const client = getClient();
-  await client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+  await client.send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key }));
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +196,7 @@ export async function getSignedUrl(
   expiresIn = 3600,
   downloadFilename?: string,
 ): Promise<string | null> {
-  if (!storageEnabled) return null;
+  if (!isStorageEnabled()) return null;
   try {
     const client = getClient();
     // Override the response Content-Disposition so the browser uses this
@@ -144,7 +207,7 @@ export async function getSignedUrl(
       ? buildContentDisposition("attachment", downloadFilename)
       : undefined;
     const command = new GetObjectCommand({
-      Bucket: BUCKET,
+      Bucket: bucketName(),
       Key: key,
       ResponseContentDisposition: responseContentDisposition,
     }) as any;

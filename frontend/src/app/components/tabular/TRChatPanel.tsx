@@ -24,7 +24,7 @@ import {
     type TRCitationAnnotation,
 } from "@/app/lib/mikeApi";
 import type { AssistantEvent, ColumnConfig, Document } from "../shared/types";
-import { ModelToggle } from "../assistant/ModelToggle";
+import { ModelToggle, type ModelOption } from "../assistant/ModelToggle";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
 import { PreResponseWrapper } from "../shared/PreResponseWrapper";
 import { useUserProfile } from "@/contexts/UserProfileContext";
@@ -566,6 +566,8 @@ function TRChatInput({
     model,
     onModelChange,
     apiKeys,
+    customModels,
+    customConfigured,
     onHeightChange,
 }: {
     isLoading: boolean;
@@ -574,6 +576,8 @@ function TRChatInput({
     model: string;
     onModelChange: (id: string) => void;
     apiKeys?: ApiKeyState;
+    customModels?: ModelOption[];
+    customConfigured?: boolean;
     onHeightChange: (height: number) => void;
 }) {
     const [value, setValue] = useState("");
@@ -658,6 +662,8 @@ function TRChatInput({
                         value={model}
                         onChange={onModelChange}
                         apiKeys={apiKeys}
+                        customModels={customModels}
+                        customConfigured={customConfigured}
                     />
                     <button
                         type="button"
@@ -771,8 +777,9 @@ export function TRChatPanel({
     initialChatId,
     onChatIdChange,
 }: Props) {
-    const { profile, updateModelPreference } = useUserProfile();
+    const { profile, updateModelPreference, customModels } = useUserProfile();
     const apiKeys = profile?.apiKeys;
+    const customConfigured = profile?.customLlmConfigured ?? false;
     const currentModel = profile?.tabularModel ?? "gemini-3-flash-preview";
     const [apiKeyModalProvider, setApiKeyModalProvider] =
         useState<ModelProvider | null>(null);
@@ -1121,7 +1128,7 @@ export function TRChatPanel({
 
     async function handleSubmit(trimmed: string) {
         if (!trimmed || isLoading) return;
-        if (apiKeys && !isModelAvailable(currentModel, apiKeys)) {
+        if (apiKeys && !isModelAvailable(currentModel, apiKeys, customConfigured)) {
             setApiKeyModalProvider(getModelProvider(currentModel));
             return;
         }
@@ -1914,6 +1921,8 @@ export function TRChatPanel({
                     updateModelPreference("tabularModel", id)
                 }
                 apiKeys={apiKeys}
+                customModels={customModels}
+                customConfigured={customConfigured}
                 onHeightChange={setInputHeight}
             />
 

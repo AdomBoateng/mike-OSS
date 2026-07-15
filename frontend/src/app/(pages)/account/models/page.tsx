@@ -15,6 +15,7 @@ import type { ApiKeyState } from "@/app/lib/mikeApi";
 import {
     MODELS,
     SETTINGS_MODELS,
+    isCustomModelId,
     type ModelOption,
 } from "@/app/components/assistant/ModelToggle";
 import {
@@ -30,7 +31,8 @@ import { AccountSection } from "../AccountSection";
 type ModelPreferenceField = "titleModel" | "tabularModel";
 
 export default function ModelPreferencesPage() {
-    const { profile, updateModelPreference } = useUserProfile();
+    const { profile, updateModelPreference, customModels } = useUserProfile();
+    const customConfigured = profile?.customLlmConfigured ?? false;
     const [savingField, setSavingField] = useState<ModelPreferenceField | null>(
         null,
     );
@@ -90,10 +92,13 @@ export default function ModelPreferencesPage() {
                     <ModelPreferenceDropdown
                         value={
                             optimisticValues.titleModel ??
-                            profile?.titleModel ??
-                            "gemini-3.1-flash-lite-preview"
+                            (isCustomModelId(profile?.titleModel ?? "")
+                                ? (profile?.titleModel ?? "")
+                                : "")
                         }
                         options={SETTINGS_MODELS}
+                        customModels={customModels}
+                        customConfigured={customConfigured}
                         apiKeys={profile?.apiKeys}
                         isSaving={savingField === "titleModel"}
                         isSaved={savedField === "titleModel"}
@@ -112,10 +117,13 @@ export default function ModelPreferencesPage() {
                     <ModelPreferenceDropdown
                         value={
                             optimisticValues.tabularModel ??
-                            profile?.tabularModel ??
-                            "gemini-3-flash-preview"
+                            (isCustomModelId(profile?.tabularModel ?? "")
+                                ? (profile?.tabularModel ?? "")
+                                : "")
                         }
                         options={MODELS}
+                        customModels={customModels}
+                        customConfigured={customConfigured}
                         apiKeys={profile?.apiKeys}
                         isSaving={savingField === "tabularModel"}
                         isSaved={savedField === "tabularModel"}
@@ -132,6 +140,8 @@ function ModelPreferenceDropdown({
     onChange,
     apiKeys,
     options,
+    customModels = [],
+    customConfigured = false,
     isSaving,
     isSaved,
 }: {
@@ -139,17 +149,20 @@ function ModelPreferenceDropdown({
     onChange: (id: string) => void;
     apiKeys?: ApiKeyState;
     options: ModelOption[];
+    customModels?: ModelOption[];
+    customConfigured?: boolean;
     isSaving?: boolean;
     isSaved?: boolean;
 }) {
     const [isOpen, setIsOpen] = useState(false);
-    const selected = options.find((m) => m.id === value);
-    const selectedAvailable = apiKeys ? isModelAvailable(value, apiKeys) : true;
-    const groups: ("Anthropic" | "Google" | "OpenAI")[] = [
-        "Anthropic",
-        "Google",
-        "OpenAI",
-    ];
+    const allOptions = [...options, ...customModels];
+    const selected = allOptions.find((m) => m.id === value);
+    const selectedAvailable =
+        !value || !apiKeys
+            ? true
+            : isModelAvailable(value, apiKeys, customConfigured);
+    // Custom-endpoint models only — built-in providers were removed.
+    const groups: ModelOption["group"][] = ["Custom"];
 
     return (
         <DropdownMenu onOpenChange={setIsOpen}>
@@ -184,7 +197,7 @@ function ModelPreferenceDropdown({
                 align="start"
             >
                 {groups.map((group, gi) => {
-                    const items = options.filter((m) => m.group === group);
+                    const items = allOptions.filter((m) => m.group === group);
                     if (items.length === 0) return null;
                     return (
                         <div key={group}>
@@ -195,17 +208,23 @@ function ModelPreferenceDropdown({
                             {items.map((m) => {
                                 const provider = modelGroupToProvider(m.group);
                                 const available = apiKeys
-                                    ? isModelAvailable(m.id, apiKeys)
+                                    ? isModelAvailable(
+                                          m.id,
+                                          apiKeys,
+                                          customConfigured,
+                                      )
                                     : true;
+                                const unavailableHint =
+                                    provider === "custom"
+                                        ? "Add a custom endpoint base URL to use this model"
+                                        : `Add a ${providerLabel(provider)} API key to use this model`;
                                 return (
                                     <DropdownMenuItem
                                         key={m.id}
                                         className="cursor-pointer"
                                         onSelect={() => onChange(m.id)}
                                         title={
-                                            !available
-                                                ? `Add a ${providerLabel(provider)} API key to use this model`
-                                                : undefined
+                                            !available ? unavailableHint : undefined
                                         }
                                     >
                                         <span

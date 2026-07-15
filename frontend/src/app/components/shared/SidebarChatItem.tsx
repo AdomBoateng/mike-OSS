@@ -21,6 +21,48 @@ interface Props {
     projectName?: string;
 }
 
+// Compact "last used" label for the sidebar: today → time, this week →
+// weekday, otherwise a short date (adding the year once it's no longer the
+// current one).
+function formatRelative(iso: string): string {
+    const then = new Date(iso);
+    if (Number.isNaN(then.getTime())) return "";
+    const now = new Date();
+    const sameDay = then.toDateString() === now.toDateString();
+    if (sameDay) {
+        return then.toLocaleTimeString(undefined, {
+            hour: "numeric",
+            minute: "2-digit",
+        });
+    }
+    const diffDays = Math.floor(
+        (now.getTime() - then.getTime()) / 86_400_000,
+    );
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) {
+        return then.toLocaleDateString(undefined, { weekday: "short" });
+    }
+    return then.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year:
+            then.getFullYear() === now.getFullYear() ? undefined : "numeric",
+    });
+}
+
+// Full "Mon D, YYYY, h:mm AM" used in the hover tooltip.
+function formatFull(iso: string): string {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+    });
+}
+
 export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props) {
     const { renameChat, deleteChat } = useChatHistoryContext();
     const { user } = useAuth();
@@ -47,10 +89,20 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
         setEditTitle(chat.title ?? "");
     };
 
+    const editedIso = chat.updated_at ?? chat.created_at;
+    const editedLabel = formatRelative(editedIso);
+    const startedFull = formatFull(chat.created_at);
+    const editedFull = formatFull(editedIso);
+    const titleText = chat.title ?? "Untitled chat";
+    const hoverTitle =
+        `${projectName ? `${projectName}: ` : ""}${titleText}` +
+        `${startedFull ? `\nStarted ${startedFull}` : ""}` +
+        `${editedFull ? `\nLast used ${editedFull}` : ""}`;
+
     return (
         <div
             className={cn(
-                "group relative flex items-center w-full h-9 rounded-md transition-colors",
+                "group relative flex items-center w-full min-h-9 rounded-md transition-colors",
                 isActive ? "bg-gray-200/60" : "hover:bg-gray-100",
             )}
         >
@@ -84,23 +136,24 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
                 <>
                     <button
                         onClick={onSelect}
-                        onMouseEnter={(e) => {
-                            const el = e.currentTarget;
-                            const overflow = el.scrollWidth - el.clientWidth;
-                            if (overflow > 0) el.scrollTo({ left: overflow, behavior: "smooth" });
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.scrollTo({ left: 0, behavior: "smooth" });
-                        }}
-                        className={`flex-1 min-w-0 text-left px-3 py-2 text-xs overflow-x-hidden whitespace-nowrap scrollbar-none ${
+                        className={`flex flex-1 min-w-0 flex-col items-start gap-0.5 px-3 py-1.5 text-left ${
                             isActive ? "text-gray-900" : "text-gray-700"
                         }`}
-                        title={projectName ? `${projectName}: ${chat.title ?? "Untitled chat"}` : (chat.title ?? "Untitled chat")}
+                        title={hoverTitle}
                     >
-                        {projectName && (
-                            <span className="text-gray-400 font-normal">{projectName}: </span>
+                        <span className="w-full truncate text-xs">
+                            {projectName && (
+                                <span className="text-gray-400 font-normal">
+                                    {projectName}:{" "}
+                                </span>
+                            )}
+                            {titleText}
+                        </span>
+                        {editedLabel && (
+                            <span className="w-full truncate text-[10px] leading-none text-gray-400">
+                                {editedLabel}
+                            </span>
                         )}
-                        {chat.title ?? "Untitled chat"}
                     </button>
 
                     <DropdownMenu>

@@ -495,23 +495,28 @@ async function resolveCallableTool(
     openaiToolName: string,
     db: Db,
 ): Promise<{ connector: ConnectorRow; tool: ToolCacheRow } | null> {
-    const { data, error } = await db
+    // Two-step lookup (the query shim has no PostgREST embedded joins): find the
+    // enabled, no-confirmation tool, then its connector scoped to this user. The
+    // pair is the AND-of-both-filters that the previous `!inner` join expressed.
+    const { data: tool } = await db
         .from("user_mcp_connector_tools")
-        .select("*, user_mcp_connectors!inner(*)")
+        .select("*")
         .eq("openai_tool_name", openaiToolName)
         .eq("enabled", true)
         .eq("requires_confirmation", false)
-        .eq("user_mcp_connectors.user_id", userId)
-        .eq("user_mcp_connectors.enabled", true)
-        .single();
-    if (error || !data) return null;
-    const row = data as ToolCacheRow & {
-        user_mcp_connectors: ConnectorRow | ConnectorRow[];
-    };
-    const connector = Array.isArray(row.user_mcp_connectors)
-        ? row.user_mcp_connectors[0]
-        : row.user_mcp_connectors;
-    return { connector, tool: row };
+        .maybeSingle();
+    if (!tool) return null;
+
+    const { data: connector } = await db
+        .from("user_mcp_connectors")
+        .select("*")
+        .eq("id", (tool as ToolCacheRow & { connector_id: string }).connector_id)
+        .eq("user_id", userId)
+        .eq("enabled", true)
+        .maybeSingle();
+    if (!connector) return null;
+
+    return { connector: connector as ConnectorRow, tool: tool as ToolCacheRow };
 }
 
 function stringifyMcpResult(result: unknown): string {

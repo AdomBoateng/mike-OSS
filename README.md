@@ -18,7 +18,7 @@ Website: [mikeoss.com](https://mikeoss.com)
 - git
 - A Supabase project
 - A Cloudflare R2 bucket, MinIO bucket, or another S3-compatible bucket
-- At least one supported model provider API key: Anthropic, Google Gemini, or OpenAI
+- At least one supported model provider: Anthropic, Google Gemini, OpenAI, or a custom OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, …)
 - Optional: a CourtListener API token for case law lookup and citation verification
 - LibreOffice installed locally if you need DOC/DOCX to PDF conversion
 
@@ -62,6 +62,14 @@ GEMINI_API_KEY=your-gemini-key
 ANTHROPIC_API_KEY=your-anthropic-key
 OPENAI_API_KEY=your-openai-key
 RESEND_API_KEY=your-resend-key
+
+# Optional: a custom OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, …).
+# CUSTOM_LLM_BASE_URL is the OpenAI-compatible root; its models are fetched from
+# {CUSTOM_LLM_BASE_URL}/models. CUSTOM_LLM_API_KEY is optional (local servers
+# such as Ollama don't require one). Both act as instance-wide fallbacks that a
+# user can override per-account under Account > Models & API Keys.
+CUSTOM_LLM_BASE_URL=http://localhost:11434/v1
+CUSTOM_LLM_API_KEY=
 USER_API_KEYS_ENCRYPTION_SECRET=your-long-random-secret
 
 # Optional: enables CourtListener case law and citation tools.
@@ -82,6 +90,8 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
 Supabase values come from the project dashboard. Use the project URL for `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`, the service role key for the backend `SUPABASE_SECRET_KEY`, and the anon/public key for `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`. If your Supabase project shows multiple key formats, use the legacy JWT-style anon and service role keys expected by the Supabase client libraries.
 
 Provider keys are only needed for the models, legal research, and email features you plan to use. Model provider keys and the CourtListener token can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
+
+To use a custom OpenAI-compatible endpoint, set a base URL (env `CUSTOM_LLM_BASE_URL` or per user in **Account > Models & API Keys**). Mike fetches the available models from `{base URL}/models` and lists them under a **Custom** group in the model picker — no model names are hardcoded for this provider. Unlike the cloud providers, the per-user base URL overrides the env value rather than being locked, so an instance-wide default can still be tailored per account. An API key is optional (local servers such as Ollama don't need one).
 
 ## CourtListener Integration
 

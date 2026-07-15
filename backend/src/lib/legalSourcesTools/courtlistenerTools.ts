@@ -73,10 +73,22 @@ export const COURTLISTENER_SYSTEM_PROMPT = `US CASE LAW RESEARCH:
 Use CourtListener when answering US-law questions that require case law.
 
 Workflow:
-1. If you have reporter citations, verify them with courtlistener_verify_citations using only clean citations: {"citations":["467 U.S. 837","323 U.S. 134"]}. Never pass case names to this tool.
-2. Fetch matched clusters with courtlistener_get_cases.
-3. Get cite-worthy text from the fetched cases with courtlistener_find_in_case. Use short 1-3 word searches, maximum 3 searches per assistant turn.
-4. If snippets are not enough, read only the necessary opinion(s) with courtlistener_read_case. For multi-opinion cases, choose the specific opinion_id/opinionIds needed; do not read all opinions by default.
+1. To find a case by name, party, or topic when you do NOT have a reporter citation (e.g. "Hamm v. Smith"), search with courtlistener_search_case_law. Do not ask the user for a citation, jurisdiction, or year before running this search — search first, then use the clusterId of the best match with courtlistener_get_cases. Only ask the user to disambiguate if the search returns several plausible different cases.
+2. If you already have reporter citations, verify them with courtlistener_verify_citations using only clean citations: {"citations":["467 U.S. 837","323 U.S. 134"]}. Never pass case names to this tool.
+3. Fetch matched clusters with courtlistener_get_cases (using clusterIds from search or verification).
+4. Get cite-worthy text from the fetched cases with courtlistener_find_in_case. Use short 1-3 word searches, maximum 3 searches per assistant turn.
+5. If snippets are not enough, read only the necessary opinion(s) with courtlistener_read_case. For multi-opinion cases, choose the specific opinion_id/opinionIds needed; do not read all opinions by default.
+
+Carry the research through in the same turn — do not stop early to ask the user for direction:
+- When the user names, asks about, or asks you to "search for" / "find" / "look up" a case, treat that as a request to both locate it AND report what it holds. Run the search, fetch the cluster, and read the relevant opinion text, then give the substantive answer — a summary of the holding, facts, and reasoning — in that same turn.
+- courtlistener_get_cases and courtlistener_search_case_law return metadata only, not opinion text. Finding the cluster is NOT the finished task: proceed to courtlistener_find_in_case and/or courtlistener_read_case to obtain the actual opinion text before you answer.
+- Never end your turn by listing which CourtListener tools you could use next, by asking the user to choose between find_in_case and read_case, or by asking what they want from the case. Just take the next step yourself.
+- The only time you pause to ask the user is when the search returns several genuinely different cases that you cannot disambiguate. A single clearly-matching case is never a reason to stop and ask.
+
+But do not over-research — once you have the opinion text, WRITE THE ANSWER:
+- As soon as courtlistener_read_case has returned the opinion text (or find_in_case has returned the passages you need), stop calling tools and write the summary from what you already have.
+- If a find_in_case query returns 0 matches, do NOT keep trying more phrasings or re-fetch the same cluster — the opinion text from read_case is sufficient to summarize; use it. A handful of tool calls is enough.
+- Never spend the whole turn calling tools without producing a written answer. If you have read the case, your turn must end with the summary, not with another tool call.
 
 Citation rules:
 - Final case citations must be based on opinion text or passage snippets supplied in this turn. Do not cite cases based only on memory, metadata, search results, citationLinks, or verification results.
@@ -90,6 +102,45 @@ Limits:
 - If any CourtListener call returns a rate-limit/throttling/429 error, stop all CourtListener calls for that turn and answer using only information already available.`;
 
 export const COURTLISTENER_TOOLS = [
+    {
+        type: "function",
+        function: {
+            name: COURTLISTENER_TOOL_NAMES.searchCaseLaw,
+            description:
+                'Search CourtListener for US case law by case name, party names, topic, or keywords when you do NOT already have a reporter citation (e.g. "Hamm v. Smith" or "qualified immunity excessive force"). Returns matching opinion clusters with clusterId, caseName, citation, court, and dateFiled. This is the entry point for locating a case by name: take the clusterId of the best match and pass it to courtlistener_get_cases to fetch opinion text. Do not ask the user for a citation before trying this search.',
+            parameters: {
+                type: "object",
+                properties: {
+                    query: {
+                        type: "string",
+                        description:
+                            'Case name, party names, or topical keywords to search for, e.g. "Hamm v. Smith" or "qualified immunity excessive force".',
+                    },
+                    court: {
+                        type: "string",
+                        description:
+                            'Optional CourtListener court ID to restrict results (e.g. "scotus", "ca9").',
+                    },
+                    filedAfter: {
+                        type: "string",
+                        description:
+                            "Optional lower bound on the filing date, formatted YYYY-MM-DD.",
+                    },
+                    filedBefore: {
+                        type: "string",
+                        description:
+                            "Optional upper bound on the filing date, formatted YYYY-MM-DD.",
+                    },
+                    limit: {
+                        type: "integer",
+                        description:
+                            "Maximum number of results to return (1-20, default 10).",
+                    },
+                },
+                required: ["query"],
+            },
+        },
+    },
     {
         type: "function",
         function: {

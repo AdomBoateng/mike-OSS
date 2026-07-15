@@ -1,9 +1,9 @@
 /**
  * Mike API client — all requests to the Node.js backend.
- * Attaches the Supabase auth token for user authentication.
+ * Attaches our session token (from LDAP login) for user authentication.
  */
 
-import { supabase } from "@/lib/supabase";
+import { getStoredToken, setStoredToken } from "@/lib/authToken";
 import type {
     AssistantEvent,
     Chat,
@@ -62,11 +62,30 @@ export function isMfaRequiredError(error: unknown) {
 }
 
 async function getAuthHeader(): Promise<Record<string, string>> {
-    const {
-        data: { session },
-    } = await supabase.auth.getSession();
-    if (!session?.access_token) return {};
-    return { Authorization: `Bearer ${session.access_token}` };
+    const token = getStoredToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export interface LoginResult {
+    token: string;
+    user: { id: string; email: string | null; displayName: string | null };
+}
+
+/** Authenticate against the backend (LDAP). Throws MikeApiError on failure. */
+export async function login(
+    username: string,
+    password: string,
+): Promise<LoginResult> {
+    const response = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ username, password }),
+    });
+    if (!response.ok) {
+        throw await toApiError(response, "/auth/login");
+    }
+    return (await response.json()) as LoginResult;
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -156,6 +175,71 @@ async function toApiError(response: Response, path: string) {
 }
 
 // ---------------------------------------------------------------------------
+// MFA (TOTP)
+// ---------------------------------------------------------------------------
+
+export interface MfaStatus {
+    enrolled: boolean;
+    pending: boolean;
+    sessionVerified: boolean;
+    mfaOnLogin: boolean;
+}
+
+export interface MfaEnrollment {
+    secret: string;
+    otpauthUrl: string;
+    qrCode: string; // data URL
+}
+
+export async function getMfaStatus(): Promise<MfaStatus> {
+    return apiRequest<MfaStatus>("/user/security/mfa");
+}
+
+/** Begin TOTP setup: returns the secret + QR to display. */
+export async function enrollMfa(): Promise<MfaEnrollment> {
+    return apiRequest<MfaEnrollment>("/user/security/mfa/enroll", {
+        method: "POST",
+    });
+}
+
+/**
+ * Confirm enrollment with a code. On success the backend re-issues a verified
+ * session token; we persist it and return it so the caller can update auth state.
+ */
+export async function verifyMfaEnrollment(code: string): Promise<string> {
+    const { token } = await apiRequest<{ token: string }>(
+        "/user/security/mfa/verify",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+        },
+    );
+    setStoredToken(token);
+    return token;
+}
+
+/** Step-up verification for an enrolled user (login gate / sensitive actions). */
+export async function challengeMfa(code: string): Promise<string> {
+    const { token } = await apiRequest<{ token: string }>(
+        "/user/security/mfa/challenge",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+        },
+    );
+    setStoredToken(token);
+    return token;
+}
+
+/** Remove the authenticator app. Throws MikeApiError(mfa_verification_required)
+ * if the session has not stepped up. */
+export async function unenrollMfa(): Promise<void> {
+    await apiRequest<void>("/user/security/mfa", { method: "DELETE" });
+}
+
+// ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
 
@@ -223,6 +307,12 @@ export interface UserProfile {
     tabularModel: string;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    /** User-supplied base URL for the custom OpenAI-compatible endpoint (null when unset or env-provided). */
+    customLlmBaseUrl: string | null;
+    /** True when a custom endpoint base URL is available from the env or the user. */
+    customLlmConfigured: boolean;
+    /** Where the active base URL comes from. */
+    customLlmSource: ApiKeySource;
     apiKeyStatus: ApiKeyStatus;
 }
 
@@ -259,6 +349,7 @@ export type ApiKeyProvider =
     | "gemini"
     | "openai"
     | "openrouter"
+    | "custom"
     | "courtlistener";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyState = Record<
@@ -285,6 +376,41 @@ export async function saveApiKey(
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: apiKey }),
+    });
+}
+
+export interface CustomModelInfo {
+    /** Mike model id, namespaced with the `custom/` prefix. */
+    id: string;
+    /** Human-facing label (the raw endpoint model name). */
+    label: string;
+}
+
+export interface CustomModelsResponse {
+    configured: boolean;
+    source: ApiKeySource;
+    models: CustomModelInfo[];
+}
+
+/** Fetch the model list advertised by the configured custom endpoint. */
+export async function getCustomModels(): Promise<CustomModelsResponse> {
+    return apiRequest<CustomModelsResponse>("/user/custom-models");
+}
+
+export interface CustomLlmSettings {
+    customLlmBaseUrl: string | null;
+    customLlmConfigured: boolean;
+    customLlmSource: ApiKeySource;
+}
+
+/** Save or clear the per-user custom endpoint base URL. */
+export async function saveCustomLlmBaseUrl(
+    baseUrl: string | null,
+): Promise<CustomLlmSettings> {
+    return apiRequest<CustomLlmSettings>("/user/custom-llm", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ base_url: baseUrl }),
     });
 }
 

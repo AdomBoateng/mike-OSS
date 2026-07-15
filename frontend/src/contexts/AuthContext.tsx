@@ -5,32 +5,64 @@ import React, {
     useContext,
     useEffect,
     useState,
+    useCallback,
     ReactNode,
 } from "react";
-import type { User as SupabaseUser } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabase";
+import {
+    getStoredToken,
+    setStoredToken,
+    clearStoredToken,
+} from "@/lib/authToken";
+import { login as apiLogin } from "@/app/lib/mikeApi";
 
 interface User {
     id: string;
     email: string;
     pendingEmail?: string | null;
+    /** Whether this session has cleared a TOTP step-up (from the token claim). */
+    mfaVerified: boolean;
 }
 
 interface AuthContextType {
     user: User | null;
     isAuthenticated: boolean;
     authLoading: boolean;
+    signIn: (username: string, password: string) => Promise<void>;
     signOut: () => Promise<void>;
     updateEmail: (email: string) => Promise<User>;
+    /** Replace the active session token (e.g. after an MFA step-up re-issues it). */
+    applySessionToken: (token: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function toUser(user: SupabaseUser): User {
+interface TokenClaims {
+    sub: string;
+    email?: string;
+    exp?: number;
+    mfaVerified?: boolean;
+}
+
+function decodeToken(token: string): TokenClaims | null {
+    try {
+        const part = token.split(".")[1];
+        if (!part) return null;
+        const json = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
+        return JSON.parse(json) as TokenClaims;
+    } catch {
+        return null;
+    }
+}
+
+function userFromToken(token: string): User | null {
+    const claims = decodeToken(token);
+    if (!claims?.sub) return null;
+    if (claims.exp && claims.exp * 1000 <= Date.now()) return null; // expired
     return {
-        id: user.id,
-        email: user.email || "",
-        pendingEmail: user.new_email ?? null,
+        id: claims.sub,
+        email: claims.email ?? "",
+        pendingEmail: null,
+        mfaVerified: claims.mfaVerified === true,
     };
 }
 
@@ -39,57 +71,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [authLoading, setAuthLoading] = useState(true);
 
     useEffect(() => {
-        const checkUser = async () => {
-            const {
-                data: { session },
-            } = await supabase.auth.getSession();
-
-            if (session?.user) {
-                setUser(toUser(session.user));
-            }
-            setAuthLoading(false);
-        };
-
-        checkUser();
-
-        const {
-            data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (_event, session) => {
-            if (session?.user) {
-                setUser(toUser(session.user));
-            } else {
-                setUser(null);
-            }
-            setAuthLoading(false);
-        });
-
-        return () => {
-            subscription.unsubscribe();
-        };
+        const token = getStoredToken();
+        if (token) {
+            const restored = userFromToken(token);
+            if (restored) setUser(restored);
+            else clearStoredToken();
+        }
+        setAuthLoading(false);
     }, []);
 
-    const signOut = async () => {
-        await supabase.auth.signOut({ scope: "local" });
-        setUser(null);
-    };
-
-    const updateEmail = async (email: string) => {
-        const redirectTo =
-            typeof window === "undefined"
-                ? undefined
-                : `${window.location.origin}/account`;
-        const { data, error } = await supabase.auth.updateUser(
-            { email },
-            redirectTo ? { emailRedirectTo: redirectTo } : undefined,
+    const signIn = useCallback(async (username: string, password: string) => {
+        const result = await apiLogin(username, password);
+        setStoredToken(result.token);
+        setUser(
+            userFromToken(result.token) ?? {
+                id: result.user.id,
+                email: result.user.email ?? "",
+                pendingEmail: null,
+                mfaVerified: false,
+            },
         );
+    }, []);
 
-        if (error) throw error;
-        if (!data.user) throw new Error("Unable to update email");
+    const signOut = useCallback(async () => {
+        clearStoredToken();
+        setUser(null);
+    }, []);
 
-        const nextUser = toUser(data.user);
-        setUser(nextUser);
-        return nextUser;
-    };
+    // Email comes from the LDAP directory; it is not editable in-app.
+    const updateEmail = useCallback(async (): Promise<User> => {
+        throw new Error("Email is managed by your directory administrator.");
+    }, []);
+
+    const applySessionToken = useCallback((token: string) => {
+        setStoredToken(token);
+        const next = userFromToken(token);
+        if (next) setUser(next);
+    }, []);
 
     return (
         <AuthContext.Provider
@@ -97,8 +115,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 user,
                 isAuthenticated: !!user,
                 authLoading,
+                signIn,
                 signOut,
                 updateEmail,
+                applySessionToken,
             }}
         >
             {children}

@@ -23,7 +23,7 @@ import { AddDocumentsModal } from "../shared/AddDocumentsModal";
 import { AssistantWorkflowModal } from "./AssistantWorkflowModal";
 import { ApiKeyMissingModal } from "../shared/ApiKeyMissingModal";
 import { ModelToggle } from "./ModelToggle";
-import { useSelectedModel } from "@/app/hooks/useSelectedModel";
+import { useSelectedModel, getStoredModelId } from "@/app/hooks/useSelectedModel";
 import { useUserProfile } from "@/contexts/UserProfileContext";
 import {
     getModelProvider,
@@ -68,8 +68,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         title: string;
     } | null>(null);
     const [model, setModel] = useSelectedModel();
-    const { profile } = useUserProfile();
+    const { profile, customModels } = useUserProfile();
     const apiKeys = profile?.apiKeys;
+    const customConfigured = profile?.customLlmConfigured ?? false;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const controlsRef = useRef<HTMLDivElement>(null);
     const [compactControls, setCompactControls] = useState(false);
@@ -86,6 +87,20 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
             });
         },
     }));
+
+    // Only custom-endpoint models are selectable now, so if the persisted
+    // selection is a (removed) built-in model, snap it to the first available
+    // custom model once the endpoint's models have loaded. Guard against the
+    // first-render window where `model` still holds the pre-hydration default
+    // (a built-in id) but a valid custom model is already saved — snapping then
+    // would clobber the user's real choice with the first model in the list.
+    useEffect(() => {
+        if (customModels.length === 0) return;
+        if (customModels.some((m) => m.id === model)) return;
+        const stored = getStoredModelId();
+        if (stored && customModels.some((m) => m.id === stored)) return;
+        setModel(customModels[0].id);
+    }, [customModels, model, setModel]);
 
     useEffect(() => {
         const el = controlsRef.current;
@@ -127,7 +142,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const handleSubmit = () => {
         const query = value.trim();
         if (!query || isLoading) return;
-        if (apiKeys && !isModelAvailable(model, apiKeys)) {
+        if (apiKeys && !isModelAvailable(model, apiKeys, customConfigured)) {
             setApiKeyModalProvider(getModelProvider(model));
             return;
         }
@@ -307,6 +322,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
                                 value={model}
                                 onChange={setModel}
                                 apiKeys={apiKeys}
+                                customModels={customModels}
+                                customConfigured={customConfigured}
                             />
                             <button
                                 type="button"

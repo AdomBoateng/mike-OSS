@@ -29,11 +29,25 @@ const devLog = (...args: Parameters<typeof console.log>) => {
     if (isDev) console.log(...args);
 };
 
-const TITLE_FALLBACK = "Misc. Query";
+// Derive a human-readable title from the user's own message. Used as the
+// fallback whenever the title model can't produce something better, so a chat
+// is always labelled with what was actually discussed rather than a generic
+// placeholder.
+function fallbackTitleFromMessage(message: string): string {
+    const firstLine = message.split(/\r?\n/)[0] ?? message;
+    const cleaned = firstLine.replace(/\s+/g, " ").trim();
+    if (!cleaned) return "New Chat";
+    return cleaned.slice(0, 60);
+}
 
-function normalizeGeneratedTitle(raw: string): string {
+function normalizeGeneratedTitle(raw: string, fallback: string): string {
     const title = raw.trim().replace(/^["'`]+|["'`.,:;!?]+$/g, "").trim();
-    if (!title) return TITLE_FALLBACK;
+    // Empty output, or the model echoing a "not enough info" placeholder, means
+    // no usable title — fall back to the user's message instead.
+    const lower = title.toLowerCase();
+    if (!title || lower === "misc. query" || lower === "misc query") {
+        return fallback;
+    }
     return title.slice(0, 80);
 }
 
@@ -391,18 +405,29 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
     if (!chat)
         return void res.status(404).json({ detail: "Chat not found" });
 
+    const fallbackTitle = fallbackTitleFromMessage(message);
     try {
         const { title_model, api_keys } = await getUserModelSettings(
             userId,
             db,
         );
-        const titleText = await completeText({
-            model: title_model,
-            user: `Generate a concise title (3–6 words) for a chat in an AI Legal Platform that starts with this message. The title should describe the topic or document — do NOT include words like "Legal Assistant", "AI", "Chat", or any similar prefix. If there is not enough information to generate a title, return exactly "${TITLE_FALLBACK}". Return only the title, no quotes or punctuation.\n\nMessage: ${message.slice(0, 500)}`,
-            maxTokens: 64,
-            apiKeys: api_keys,
-        });
-        const title = normalizeGeneratedTitle(titleText);
+        let title = fallbackTitle;
+        try {
+            const titleText = await completeText({
+                model: title_model,
+                user: `Generate a concise title (3–6 words) that describes the topic or document of a chat in an AI Legal Platform that starts with the message below. Do NOT include words like "Legal Assistant", "AI", "Chat", or any similar prefix. Return only the title, no quotes or punctuation.\n\nMessage: ${message.slice(0, 500)}`,
+                maxTokens: 64,
+                apiKeys: api_keys,
+            });
+            title = normalizeGeneratedTitle(titleText, fallbackTitle);
+        } catch (llmErr) {
+            // Title model unavailable (no key / endpoint down / bad id) — keep
+            // the message-derived fallback rather than failing the request.
+            console.error(
+                "[generate-title] title model failed, using fallback",
+                safeErrorLog(llmErr),
+            );
+        }
 
         await db
             .from("chats")
@@ -412,7 +437,17 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
         res.json({ title });
     } catch (err) {
         console.error("[generate-title]", safeErrorLog(err));
-        res.status(500).json({ detail: "Failed to generate title" });
+        // Even on unexpected failure, persist a sensible title so the chat is
+        // never left labelled with a generic placeholder.
+        try {
+            await db
+                .from("chats")
+                .update({ title: fallbackTitle })
+                .eq("id", chatId);
+        } catch {
+            /* best effort — title stays as whatever the stream set */
+        }
+        res.json({ title: fallbackTitle });
     }
 });
 
@@ -510,13 +545,24 @@ chatRouter.post("/", requireAuth, async (req, res) => {
 
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (lastUser) {
-        await db.from("chat_messages").insert({
-            chat_id: chatId,
-            role: "user",
-            content: lastUser.content,
-            files: lastUser.files ?? null,
-            workflow: lastUser.workflow ?? null,
-        });
+        const { error: userInsertError } = await db
+            .from("chat_messages")
+            .insert({
+                chat_id: chatId,
+                role: "user",
+                content: lastUser.content,
+                files: lastUser.files ?? null,
+                workflow: lastUser.workflow ?? null,
+            });
+        // A failure here previously went unnoticed and dropped the user's
+        // message from the persisted transcript — log loudly so it can't
+        // silently regress again.
+        if (userInsertError) {
+            console.error(
+                "[chat/stream] failed to persist user message",
+                userInsertError,
+            );
+        }
     }
 
     const { docIndex, docStore } = await buildDocContext(

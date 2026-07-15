@@ -29,13 +29,10 @@ const devLog = (...args: Parameters<typeof console.log>) => {
 export default function AccountPage() {
     const router = useRouter();
     const { user, signOut, updateEmail } = useAuth();
-    const { profile, updateDisplayName, updateOrganisation } = useUserProfile();
+    const { profile } = useUserProfile();
+    // Display name + organisation are managed by LDAP and shown read-only.
     const [displayName, setDisplayName] = useState("");
-    const [isSavingName, setIsSavingName] = useState(false);
-    const [saved, setSaved] = useState(false);
     const [organisation, setOrganisation] = useState("");
-    const [isSavingOrg, setIsSavingOrg] = useState(false);
-    const [orgSaved, setOrgSaved] = useState(false);
     const [email, setEmail] = useState("");
     const [isSavingEmail, setIsSavingEmail] = useState(false);
     const [emailSaved, setEmailSaved] = useState(false);
@@ -138,32 +135,6 @@ export default function AccountPage() {
         }
     };
 
-    const handleSaveDisplayName = async () => {
-        setIsSavingName(true);
-        const success = await updateDisplayName(displayName.trim());
-        setIsSavingName(false);
-
-        if (success) {
-            setSaved(true);
-            setTimeout(() => setSaved(false), 2000);
-        } else {
-            alert("Failed to update display name. Please try again.");
-        }
-    };
-
-    const handleSaveOrganisation = async () => {
-        setIsSavingOrg(true);
-        const success = await updateOrganisation(organisation.trim());
-        setIsSavingOrg(false);
-
-        if (success) {
-            setOrgSaved(true);
-            setTimeout(() => setOrgSaved(false), 2000);
-        } else {
-            alert("Failed to update organisation. Please try again.");
-        }
-    };
-
     if (!user) return null;
 
     return (
@@ -179,76 +150,34 @@ export default function AccountPage() {
                             <label className="text-sm text-gray-600 block mb-2">
                                 Display Name
                             </label>
-                            <div className="space-y-2">
-                                <Input
-                                    type="text"
-                                    value={displayName}
-                                    onChange={(e) =>
-                                        setDisplayName(e.target.value)
-                                    }
-                                    placeholder="Enter your name"
-                                    className={accountGlassInputClassName}
-                                />
-                                <div className="flex justify-end">
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveDisplayName}
-                                        disabled={
-                                            isSavingName ||
-                                            !displayName.trim() ||
-                                            saved
-                                        }
-                                        className="text-xs font-medium text-gray-700 transition-colors hover:text-gray-950 disabled:cursor-not-allowed disabled:text-gray-400"
-                                    >
-                                        {isSavingName ? (
-                                            "Saving..."
-                                        ) : saved ? (
-                                            "Saved"
-                                        ) : (
-                                            "Save"
-                                        )}
-                                    </button>
-                                </div>
-                            </div>
+                            <Input
+                                type="text"
+                                value={displayName}
+                                placeholder="—"
+                                className={accountGlassInputClassName}
+                                readOnly
+                                disabled
+                            />
                         </div>
                         <div className="pt-4">
                             <label className="text-sm text-gray-600 block mb-2">
                                 Organisation
                             </label>
-                            <div className="space-y-2">
-                                <Input
-                                    type="text"
-                                    value={organisation}
-                                    onChange={(e) =>
-                                        setOrganisation(e.target.value)
-                                    }
-                                    placeholder="Enter your organisation"
-                                    className={accountGlassInputClassName}
-                                />
-                                <div className="flex justify-end">
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveOrganisation}
-                                        disabled={
-                                            isSavingOrg ||
-                                            organisation.trim() ===
-                                                (profile?.organisation ?? "") ||
-                                            orgSaved
-                                        }
-                                        className="text-xs font-medium text-gray-700 transition-colors hover:text-gray-950 disabled:cursor-not-allowed disabled:text-gray-400"
-                                    >
-                                        {isSavingOrg ? (
-                                            "Saving..."
-                                        ) : orgSaved ? (
-                                            "Saved"
-                                        ) : (
-                                            "Save"
-                                        )}
-                                    </button>
-                                </div>
-                            </div>
+                            <Input
+                                type="text"
+                                value={organisation}
+                                placeholder="—"
+                                className={accountGlassInputClassName}
+                                readOnly
+                                disabled
+                            />
                         </div>
                     </div>
+                    <p className="mt-3 text-xs text-gray-400">
+                        Your display name and organisation are managed by your
+                        organisation&apos;s directory (LDAP) and can&apos;t be
+                        edited here.
+                    </p>
                 </AccountSection>
             </section>
 
@@ -307,20 +236,6 @@ export default function AccountPage() {
                                 )}
                             </button>
                         </div>
-                    </div>
-                </AccountSection>
-            </section>
-
-            {/* Plan */}
-            <section className="space-y-3">
-                <h2 className="text-2xl font-medium font-serif text-gray-900">
-                    Usage Plan
-                </h2>
-                <AccountSection className="p-4">
-                    <div>
-                        <p className="text-base font-medium text-gray-500 capitalize">
-                            {profile?.tier || "Free"}
-                        </p>
                     </div>
                 </AccountSection>
             </section>

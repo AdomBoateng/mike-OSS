@@ -10,15 +10,19 @@ import React, {
 } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
+    type ApiKeySource,
     type ApiKeyState,
     type ApiKeyProvider,
     type UserProfile as ApiUserProfile,
+    getCustomModels,
     getUserProfile,
     isMfaRequiredError,
     saveApiKey,
+    saveCustomLlmBaseUrl,
     updateUserMfaOnLogin,
     updateUserProfile,
 } from "@/app/lib/mikeApi";
+import type { ModelOption } from "@/app/components/assistant/ModelToggle";
 
 interface UserProfile {
     displayName: string | null;
@@ -31,12 +35,17 @@ interface UserProfile {
     tabularModel: string;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    customLlmBaseUrl: string | null;
+    customLlmConfigured: boolean;
+    customLlmSource: ApiKeySource;
     apiKeys: ApiKeyState;
 }
 
 interface UserProfileContextType {
     profile: UserProfile | null;
     loading: boolean;
+    /** Models advertised by the custom endpoint (empty when not configured). */
+    customModels: ModelOption[];
     updateDisplayName: (name: string) => Promise<boolean>;
     updateOrganisation: (organisation: string) => Promise<boolean>;
     updateModelPreference: (
@@ -49,6 +58,7 @@ interface UserProfileContextType {
         provider: ApiKeyProvider,
         value: string | null,
     ) => Promise<boolean>;
+    updateCustomLlmBaseUrl: (value: string | null) => Promise<boolean>;
     reloadProfile: () => Promise<void>;
     incrementMessageCredits: () => Promise<boolean>;
 }
@@ -62,6 +72,7 @@ const API_KEY_PROVIDERS: ApiKeyProvider[] = [
     "gemini",
     "openai",
     "openrouter",
+    "custom",
     "courtlistener",
 ];
 
@@ -71,6 +82,7 @@ function emptyApiKeys(): ApiKeyState {
         gemini: { configured: false, source: null },
         openai: { configured: false, source: null },
         openrouter: { configured: false, source: null },
+        custom: { configured: false, source: null },
         courtlistener: { configured: false, source: null },
     };
 }
@@ -97,6 +109,7 @@ function toProfile(data: ApiUserProfile): UserProfile {
 export function UserProfileProvider({ children }: { children: ReactNode }) {
     const { user, isAuthenticated } = useAuth();
     const [profile, setProfile] = useState<UserProfile | null>(null);
+    const [customModels, setCustomModels] = useState<ModelOption[]>([]);
     const [loading, setLoading] = useState(true);
     const userId = user?.id ?? null;
 
@@ -121,6 +134,9 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 tabularModel: "gemini-3-flash-preview",
                 mfaOnLogin: false,
                 legalResearchUs: true,
+                customLlmBaseUrl: null,
+                customLlmConfigured: false,
+                customLlmSource: null,
                 apiKeys: emptyApiKeys(),
             });
         } finally {
@@ -137,6 +153,36 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             setLoading(false);
         }
     }, [isAuthenticated, userId, loadProfile]);
+
+    const refreshCustomModels = useCallback(async () => {
+        try {
+            const res = await getCustomModels();
+            setCustomModels(
+                res.configured
+                    ? res.models.map((m) => ({
+                          id: m.id,
+                          label: m.label,
+                          group: "Custom" as const,
+                      }))
+                    : [],
+            );
+        } catch {
+            // Endpoint unreachable or misconfigured — surface no custom models.
+            setCustomModels([]);
+        }
+    }, []);
+
+    // Refetch the custom model list whenever the endpoint configuration
+    // changes (base URL added/removed/edited).
+    const customConfigured = profile?.customLlmConfigured ?? false;
+    const customBaseUrl = profile?.customLlmBaseUrl ?? null;
+    useEffect(() => {
+        if (isAuthenticated && customConfigured) {
+            void refreshCustomModels();
+        } else {
+            setCustomModels([]);
+        }
+    }, [isAuthenticated, customConfigured, customBaseUrl, refreshCustomModels]);
 
     const updateDisplayName = useCallback(
         async (displayName: string): Promise<boolean> => {
@@ -262,6 +308,31 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user],
     );
 
+    const updateCustomLlmBaseUrl = useCallback(
+        async (value: string | null): Promise<boolean> => {
+            if (!user) return false;
+            const normalized = value?.trim() ? value.trim() : null;
+            try {
+                const settings = await saveCustomLlmBaseUrl(normalized);
+                setProfile((prev) =>
+                    prev
+                        ? {
+                              ...prev,
+                              customLlmBaseUrl: settings.customLlmBaseUrl,
+                              customLlmConfigured: settings.customLlmConfigured,
+                              customLlmSource: settings.customLlmSource,
+                          }
+                        : null,
+                );
+                return true;
+            } catch (error) {
+                if (isMfaRequiredError(error)) throw error;
+                return false;
+            }
+        },
+        [user],
+    );
+
     const reloadProfile = useCallback(async () => {
         if (userId) {
             await loadProfile();
@@ -286,12 +357,14 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
             value={{
                 profile,
                 loading,
+                customModels,
                 updateDisplayName,
                 updateOrganisation,
                 updateModelPreference,
                 updateMfaOnLogin,
                 updateLegalResearchUs,
                 updateApiKey,
+                updateCustomLlmBaseUrl,
                 reloadProfile,
                 incrementMessageCredits,
             }}

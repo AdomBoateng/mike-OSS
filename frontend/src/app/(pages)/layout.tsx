@@ -19,20 +19,17 @@ export default function MikeLayout({
     const [mobileActionsContainer, setMobileActionsContainer] =
         useState<HTMLDivElement | null>(null);
 
-    const [isSidebarOpenDesktop, setIsSidebarOpenDesktop] = useState(() => {
-        if (typeof window !== "undefined") {
-            const saved = localStorage.getItem("sidebarOpen");
-            return saved !== null ? saved === "true" : true;
-        }
-        return true;
-    });
+    // Initialize to SSR-safe defaults so the server and client first render
+    // match. The real values (saved preference, viewport width) are read after
+    // mount in the effect below to avoid a hydration mismatch.
+    const [isSidebarOpenDesktop, setIsSidebarOpenDesktop] = useState(true);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-    const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
-        if (typeof window !== "undefined" && window.innerWidth < 768) {
-            return false;
-        }
-        return true;
-    });
+    useEffect(() => {
+        const saved = localStorage.getItem("sidebarOpen");
+        setIsSidebarOpenDesktop(saved !== null ? saved === "true" : true);
+        if (window.innerWidth < 768) setIsSidebarOpen(false);
+    }, []);
 
     useEffect(() => {
         if (typeof window !== "undefined" && window.innerWidth >= 768) {
@@ -76,8 +73,8 @@ export default function MikeLayout({
 
     if (authLoading) {
         return (
-            <div className="flex h-screen items-center justify-center">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
+            <div className="flex min-h-dvh items-center justify-center bg-gray-50/80">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-200 border-t-gray-700" />
             </div>
         );
     }

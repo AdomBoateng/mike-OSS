@@ -6,18 +6,8 @@ import { Loader2 } from "lucide-react";
 import { SiteLogo } from "@/components/site-logo";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/lib/supabase";
-import {
-    needsMfaVerification,
-    VerificationCodeInput,
-} from "@/app/components/shared/MfaVerificationPopup";
-import { markMfaVerifiedForGate } from "@/app/components/shared/MfaLoginGate";
-
-type MfaFactor = {
-    id: string;
-    friendly_name?: string | null;
-    factor_type: string;
-};
+import { challengeMfa, getMfaStatus } from "@/app/lib/mikeApi";
+import { VerificationCodeInput } from "@/app/components/shared/MfaVerificationPopup";
 
 const authGlassCardClassName =
     "rounded-2xl border border-white/70 bg-white/72 px-8 py-8 shadow-[0_4px_14px_rgba(15,23,42,0.045),inset_0_1px_0_rgba(255,255,255,0.86),inset_0_-8px_18px_rgba(255,255,255,0.12)] backdrop-blur-2xl";
@@ -25,17 +15,15 @@ const authGlassCardClassName =
 export default function VerifyMfaPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
-    const { user, authLoading, signOut } = useAuth();
-    const [factors, setFactors] = useState<MfaFactor[]>([]);
-    const [selectedFactorId, setSelectedFactorId] = useState("");
+    const { user, authLoading, signOut, applySessionToken } = useAuth();
+    const [enrolled, setEnrolled] = useState(false);
     const [code, setCode] = useState("");
     const [loading, setLoading] = useState(true);
     const [verifying, setVerifying] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const nextPath = safeNextPath(searchParams.get("next"));
-    const canVerify =
-        !loading && !verifying && !!selectedFactorId && code.trim().length === 6;
+    const canVerify = !loading && !verifying && code.trim().length === 6;
 
     useEffect(() => {
         if (authLoading) return;
@@ -51,26 +39,14 @@ export default function VerifyMfaPage() {
             setError(null);
             setCode("");
             try {
-                const required = await needsMfaVerification();
+                const status = await getMfaStatus();
                 if (cancelled) return;
-                if (!required) {
+                if (!status.enrolled || status.sessionVerified) {
+                    // Nothing to verify (or already verified) — move along.
                     router.replace(nextPath);
                     return;
                 }
-
-                const { data, error: factorError } =
-                    await supabase.auth.mfa.listFactors();
-                if (cancelled) return;
-                if (factorError) throw factorError;
-
-                const verified = (data.totp ?? []) as MfaFactor[];
-                setFactors(verified);
-                setSelectedFactorId(verified[0]?.id ?? "");
-                if (verified.length === 0) {
-                    setError(
-                        "No verified authenticator factor is available for this account.",
-                    );
-                }
+                setEnrolled(true);
             } catch (loadError) {
                 if (cancelled) return;
                 setError(
@@ -95,21 +71,19 @@ export default function VerifyMfaPage() {
 
         setVerifying(true);
         setError(null);
-        const { error: verifyError } =
-            await supabase.auth.mfa.challengeAndVerify({
-                factorId: selectedFactorId,
-                code: code.trim(),
-            });
-        setVerifying(false);
-
-        if (verifyError) {
-            setError(verifyError.message);
-            return;
+        try {
+            const token = await challengeMfa(code.trim());
+            applySessionToken(token);
+            setCode("");
+            router.replace(nextPath);
+        } catch (verifyError) {
+            setError(
+                verifyError instanceof Error
+                    ? verifyError.message
+                    : "That code is incorrect or expired.",
+            );
+            setVerifying(false);
         }
-
-        setCode("");
-        markMfaVerifiedForGate();
-        router.replace(nextPath);
     }
 
     async function cancel() {
@@ -139,41 +113,19 @@ export default function VerifyMfaPage() {
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                             Loading authenticator...
                         </div>
-                    ) : factors.length === 0 ? (
+                    ) : !enrolled ? (
                         <p className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-600">
-                            No verified authenticator factor is available for
-                            this session.
+                            No authenticator app is set up for this account.
                         </p>
                     ) : (
-                        <>
-                            {factors.length > 1 && (
-                                <select
-                                    value={selectedFactorId}
-                                    onChange={(event) =>
-                                        setSelectedFactorId(event.target.value)
-                                    }
-                                    className="h-9 w-full rounded-lg border border-transparent bg-gray-100 px-3 text-sm text-gray-900 shadow-none outline-none focus-visible:border-gray-200 focus-visible:ring-2 focus-visible:ring-gray-300/45"
-                                >
-                                    {factors.map((factor) => (
-                                        <option
-                                            key={factor.id}
-                                            value={factor.id}
-                                        >
-                                            {factor.friendly_name ||
-                                                "Authenticator app"}
-                                        </option>
-                                    ))}
-                                </select>
-                            )}
-                            <VerificationCodeInput
-                                value={code}
-                                onChange={setCode}
-                                disabled={verifying}
-                                autoFocus={!loading}
-                                canSubmit={canVerify}
-                                onSubmit={() => void verify()}
-                            />
-                        </>
+                        <VerificationCodeInput
+                            value={code}
+                            onChange={setCode}
+                            disabled={verifying}
+                            autoFocus={!loading}
+                            canSubmit={canVerify}
+                            onSubmit={() => void verify()}
+                        />
                     )}
 
                     {error && <p className="text-sm text-red-600">{error}</p>}

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
+import { listAuthUsers } from "../lib/authUsers";
 import { createClient } from "@supabase/supabase-js";
 import {
   attachActiveVersionPaths,
@@ -16,8 +17,29 @@ import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
 import { deleteUserProjects } from "../lib/userDataCleanup";
+import { notifyNewCollaborators } from "../lib/projectInvites";
 
 export const projectsRouter = Router();
+
+/** Human label for who shared a project: display name if known, else email. */
+async function resolveInviterLabel(
+  db: ReturnType<typeof createServerSupabase>,
+  userId: string,
+  userEmail: string | undefined,
+): Promise<string> {
+  try {
+    const { data } = await db
+      .from("user_profiles")
+      .select("display_name")
+      .eq("user_id", userId)
+      .single();
+    const name = (data as { display_name?: string | null } | null)?.display_name;
+    if (name && name.trim()) return name.trim();
+  } catch {
+    /* fall back to email */
+  }
+  return userEmail || "A colleague";
+}
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
 
 function normalizeDocumentFilename(nextName: unknown, currentName: string) {
@@ -193,6 +215,18 @@ projectsRouter.post("/", requireAuth, async (req, res) => {
     .single();
   if (error) return void res.status(500).json({ detail: error.message });
   res.status(201).json({ ...data, documents: [] });
+
+  // Fire-and-forget: notify newly-added collaborators. Never blocks/fails the
+  // create response.
+  if (cleanedSharedWith.length > 0) {
+    const inviterLabel = await resolveInviterLabel(db, userId, userEmail);
+    void notifyNewCollaborators({
+      projectId: data.id,
+      projectName: data.name,
+      inviterLabel,
+      newEmails: cleanedSharedWith,
+    });
+  }
 });
 
 // GET /projects/:projectId
@@ -269,8 +303,7 @@ projectsRouter.get("/:projectId/people", requireAuth, async (req, res) => {
   // Pull every auth user (matching the lookup endpoint's pattern). For
   // larger deployments this should page or be replaced with a bulk-by-id
   // RPC, but it keeps things simple while user counts are modest.
-  const { data: usersData } = await db.auth.admin.listUsers({ perPage: 1000 });
-  const allUsers = usersData?.users ?? [];
+  const allUsers = await listAuthUsers();
   const userByEmail = new Map<string, { id: string; email: string }>();
   const userById = new Map<string, { id: string; email: string }>();
   for (const u of allUsers) {
@@ -334,6 +367,8 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
   const updates: Record<string, unknown> = {};
   if (req.body.name != null) updates.name = req.body.name;
   if (req.body.cm_number != null) updates.cm_number = req.body.cm_number;
+  // The normalised collaborator list, when shared_with is part of this update.
+  let nextSharedWith: string[] | null = null;
   if (Array.isArray(req.body.shared_with)) {
     // Normalise: lowercase + dedupe + drop empties.
     const normalizedUserEmail = userEmail?.trim().toLowerCase();
@@ -352,9 +387,28 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
       cleaned.push(e);
     }
     updates.shared_with = cleaned;
+    nextSharedWith = cleaned;
   }
 
   const db = createServerSupabase();
+
+  // Capture the previous collaborator set so we only email people newly added.
+  let previousSharedWith: string[] = [];
+  if (nextSharedWith !== null) {
+    const { data: prior } = await db
+      .from("projects")
+      .select("shared_with")
+      .eq("id", projectId)
+      .eq("user_id", userId)
+      .single();
+    const prev = (prior as { shared_with?: unknown } | null)?.shared_with;
+    if (Array.isArray(prev)) {
+      previousSharedWith = prev
+        .filter((e): e is string => typeof e === "string")
+        .map((e) => e.trim().toLowerCase());
+    }
+  }
+
   const { data, error } = await db
     .from("projects")
     .update({ ...updates, updated_at: new Date().toISOString() })
@@ -377,6 +431,22 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
   await attachActiveVersionPaths(db, docsTyped);
   await attachDocumentOwnerLabels(db, docsTyped);
   res.json({ ...data, documents: docsTyped, folders: folderData ?? [] });
+
+  // Fire-and-forget: email collaborators added by this update (not those who
+  // were already on the project). Never blocks/fails the response.
+  if (nextSharedWith !== null) {
+    const previous = new Set(previousSharedWith);
+    const added = nextSharedWith.filter((e) => !previous.has(e));
+    if (added.length > 0) {
+      const inviterLabel = await resolveInviterLabel(db, userId, userEmail);
+      void notifyNewCollaborators({
+        projectId: data.id,
+        projectName: data.name,
+        inviterLabel,
+        newEmails: added,
+      });
+    }
+  }
 });
 
 // DELETE /projects/:projectId

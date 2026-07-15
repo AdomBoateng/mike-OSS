@@ -1,20 +1,21 @@
-import { createClient } from "@supabase/supabase-js";
+import { createDb, type Db } from "./db";
+import { verifySession } from "./session";
 
 /**
- * Server-side Supabase client using the service role key.
- * Bypasses RLS — only use in API routes after verifying the user.
+ * Server-side database client for application data.
+ *
+ * Migrated off Supabase-PostgREST to self-hosted Postgres: this now returns the
+ * query-builder shim (see ./db), which reproduces the supabase-js query API the
+ * backend uses so existing `.from(...).select()/.eq()/...` call sites keep
+ * working. The name is retained to avoid churn across ~20 files. Auth is now
+ * handled by LDAP + our own session tokens (see lib/authUsers, routes/auth).
  */
-export function createServerSupabase() {
-  const url = process.env.SUPABASE_URL || "";
-  const key = process.env.SUPABASE_SECRET_KEY || "";
-  if (!url || !key) {
-    throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY must be set");
-  }
-  return createClient(url, key, { auth: { persistSession: false } });
+export function createServerSupabase(): Db {
+  return createDb();
 }
 
 /**
- * Extract and verify the Supabase JWT from the Authorization header.
+ * Extract and verify our session token from the Authorization header.
  * Returns the user's UUID string, or throws a Response with 401.
  */
 export async function getUserIdFromRequest(req: Request): Promise<string> {
@@ -25,20 +26,9 @@ export async function getUserIdFromRequest(req: Request): Promise<string> {
     });
   }
   const token = auth.slice(7).trim();
-
-  const supabaseUrl = process.env.SUPABASE_URL || "";
-  const serviceKey = process.env.SUPABASE_SECRET_KEY || "";
-
-  if (!supabaseUrl || !serviceKey) {
-    throw new Response("Server auth is not configured", { status: 500 });
-  }
-
-  const admin = createClient(supabaseUrl, serviceKey, {
-    auth: { persistSession: false },
-  });
-  const { data } = await admin.auth.getUser(token);
-  if (!data.user) {
+  const claims = verifySession(token);
+  if (!claims) {
     throw new Response("Invalid or expired token", { status: 401 });
   }
-  return data.user.id;
+  return claims.sub;
 }

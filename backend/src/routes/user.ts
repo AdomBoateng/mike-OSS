@@ -2,18 +2,25 @@ import crypto from "crypto";
 import { Router } from "express";
 import { requireAuth, requireMfaIfEnrolled } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
+import { deleteAuthUser } from "../lib/authUsers";
 import {
     DEFAULT_TABULAR_MODEL,
     DEFAULT_TITLE_MODEL,
     CLAUDE_LOW_MODELS,
     OPENAI_LOW_MODELS,
     resolveModel,
+    listCustomModels,
+    toCustomModelId,
 } from "../lib/llm";
 import {
+    type ApiKeySource,
     type ApiKeyStatus,
+    getCustomBaseUrl,
+    getUserApiKeys,
     getUserApiKeyStatus,
     hasEnvApiKey,
     normalizeApiKeyProvider,
+    saveCustomBaseUrl,
     saveUserApiKey,
 } from "../lib/userApiKeys";
 import {
@@ -40,6 +47,16 @@ import {
     buildUserTabularReviewsExport,
     userExportFilename,
 } from "../lib/userDataExport";
+import { signSession } from "../lib/session";
+import {
+    deleteFactor,
+    getFactor,
+    markVerified,
+    upsertPendingSecret,
+    userHasVerifiedTotp,
+} from "../lib/mfa";
+import { generateSecret, keyuri, verifyToken } from "../lib/totp";
+import QRCode from "qrcode";
 
 export const userRouter = Router();
 
@@ -273,7 +290,11 @@ async function selectProfileLegacy(
     return legacy;
 }
 
-function serializeProfile(row: UserProfileRow, apiKeyStatus?: ApiKeyStatus) {
+function serializeProfile(
+    row: UserProfileRow,
+    apiKeyStatus?: ApiKeyStatus,
+    customLlm?: { url: string | null; source: ApiKeySource },
+) {
     const creditsUsed = row.message_credits_used ?? 0;
     const titleFallback = apiKeyStatus?.gemini
         ? DEFAULT_TITLE_MODEL
@@ -293,6 +314,12 @@ function serializeProfile(row: UserProfileRow, apiKeyStatus?: ApiKeyStatus) {
         tabularModel: resolveModel(row.tabular_model, DEFAULT_TABULAR_MODEL),
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
+        // Only the user-supplied override is echoed back for editing; when the
+        // value comes from the server env we hide it but flag the source so the
+        // browser can render the field read-only, mirroring API-key handling.
+        customLlmBaseUrl: customLlm?.source === "user" ? customLlm.url : null,
+        customLlmConfigured: !!customLlm?.url,
+        customLlmSource: customLlm?.source ?? null,
         ...(apiKeyStatus ? { apiKeyStatus } : {}),
     };
 }
@@ -301,8 +328,6 @@ function validateProfilePayload(body: unknown):
     | {
           ok: true;
           update: {
-              display_name?: string | null;
-              organisation?: string | null;
               title_model?: string;
               tabular_model?: string;
               legal_research_us?: boolean;
@@ -315,9 +340,8 @@ function validateProfilePayload(body: unknown):
     }
 
     const raw = body as Record<string, unknown>;
+    // display_name and organisation are managed by LDAP and cannot be set here.
     const allowedFields = new Set([
-        "displayName",
-        "organisation",
         "titleModel",
         "tabularModel",
         "legalResearchUs",
@@ -333,33 +357,11 @@ function validateProfilePayload(body: unknown):
     }
 
     const update: {
-        display_name?: string | null;
-        organisation?: string | null;
         title_model?: string;
         tabular_model?: string;
         legal_research_us?: boolean;
         updated_at: string;
     } = { updated_at: new Date().toISOString() };
-
-    if ("displayName" in raw) {
-        if (raw.displayName !== null && typeof raw.displayName !== "string") {
-            return {
-                ok: false,
-                detail: "displayName must be a string or null",
-            };
-        }
-        update.display_name = raw.displayName?.trim() || null;
-    }
-
-    if ("organisation" in raw) {
-        if (raw.organisation !== null && typeof raw.organisation !== "string") {
-            return {
-                ok: false,
-                detail: "organisation must be a string or null",
-            };
-        }
-        update.organisation = raw.organisation?.trim() || null;
-    }
 
     if ("tabularModel" in raw) {
         if (typeof raw.tabularModel !== "string") {
@@ -420,17 +422,15 @@ async function userHasVerifiedTotpFactor(
     db: ReturnType<typeof createServerSupabase>,
     userId: string,
 ) {
-    const { data, error } = await db.auth.admin.getUserById(userId);
-    if (error) return { ok: false as const, error };
-
-    const factors = data.user?.factors ?? [];
-    return {
-        ok: true as const,
-        hasVerifiedTotp: factors.some(
-            (factor) =>
-                factor.factor_type === "totp" && factor.status === "verified",
-        ),
-    };
+    try {
+        const hasVerifiedTotp = await userHasVerifiedTotp(userId, db);
+        return { ok: true as const, hasVerifiedTotp };
+    } catch (err) {
+        return {
+            ok: false as const,
+            error: err instanceof Error ? err : new Error(String(err)),
+        };
+    }
 }
 
 async function ensureProfileRow(
@@ -449,7 +449,11 @@ async function ensureProfileRow(
 async function loadProfile(
     db: ReturnType<typeof createServerSupabase>,
     userId: string,
-    options: { repairMissing?: boolean; apiKeyStatus?: ApiKeyStatus } = {},
+    options: {
+        repairMissing?: boolean;
+        apiKeyStatus?: ApiKeyStatus;
+        customLlm?: { url: string | null; source: ApiKeySource };
+    } = {},
 ) {
     let { data, error } = await selectProfile(db, userId, "maybe");
 
@@ -493,7 +497,10 @@ async function loadProfile(
         row = resetData as UserProfileRow;
     }
 
-    return { data: serializeProfile(row, options.apiKeyStatus), error: null };
+    return {
+        data: serializeProfile(row, options.apiKeyStatus, options.customLlm),
+        error: null,
+    };
 }
 
 // POST /user/profile
@@ -510,9 +517,11 @@ userRouter.get("/profile", requireAuth, async (_req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
     const apiKeyStatus = await getUserApiKeyStatus(userId, db);
+    const customLlm = await getCustomBaseUrl(userId, db);
     const { data, error } = await loadProfile(db, userId, {
         repairMissing: true,
         apiKeyStatus,
+        customLlm,
     });
     if (error) return void res.status(500).json({ detail: error.message });
     res.json({ ...data, apiKeyStatus });
@@ -537,7 +546,11 @@ userRouter.patch("/profile", requireAuth, async (req, res) => {
         return void res.status(500).json({ detail: updateError.message });
 
     const apiKeyStatus = await getUserApiKeyStatus(userId, db);
-    const { data, error } = await loadProfile(db, userId, { apiKeyStatus });
+    const customLlm = await getCustomBaseUrl(userId, db);
+    const { data, error } = await loadProfile(db, userId, {
+        apiKeyStatus,
+        customLlm,
+    });
     if (error) return void res.status(500).json({ detail: error.message });
     res.json({ ...data, apiKeyStatus });
 });
@@ -583,9 +596,156 @@ userRouter.patch(
             return void res.status(500).json({ detail: updateError.message });
 
         const apiKeyStatus = await getUserApiKeyStatus(userId, db);
-        const { data, error } = await loadProfile(db, userId, { apiKeyStatus });
+        const customLlm = await getCustomBaseUrl(userId, db);
+        const { data, error } = await loadProfile(db, userId, {
+            apiKeyStatus,
+            customLlm,
+        });
         if (error) return void res.status(500).json({ detail: error.message });
         res.json({ ...data, apiKeyStatus });
+    },
+);
+
+// Re-mint the caller's session token with mfaVerified=true after a successful
+// TOTP challenge, so subsequent requests clear the step-up gate.
+function mintVerifiedToken(res: import("express").Response): string {
+    return signSession({
+        sub: res.locals.userId as string,
+        email: (res.locals.userEmail as string) ?? "",
+        ldapUid: (res.locals.ldapUid as string) ?? "",
+        mfaVerified: true,
+    });
+}
+
+function readMfaCode(body: unknown): string | null {
+    const code =
+        typeof (body as { code?: unknown })?.code === "string"
+            ? (body as { code: string }).code.trim()
+            : "";
+    return /^\d{6}$/.test(code) ? code : null;
+}
+
+// GET /user/security/mfa — enrollment + session verification status.
+userRouter.get("/security/mfa", requireAuth, async (_req, res) => {
+    const userId = res.locals.userId as string;
+    const db = createServerSupabase();
+    try {
+        const factor = await getFactor(userId, db);
+        const { data: profile } = await db
+            .from("user_profiles")
+            .select("mfa_on_login")
+            .eq("user_id", userId)
+            .maybeSingle();
+        res.json({
+            enrolled: factor?.verified === true,
+            pending: !!factor && factor.verified !== true,
+            sessionVerified: res.locals.mfaVerified === true,
+            mfaOnLogin:
+                (profile as { mfa_on_login?: boolean } | null)?.mfa_on_login ===
+                true,
+        });
+    } catch (err) {
+        res.status(500).json({ detail: errorMessage(err) });
+    }
+});
+
+// POST /user/security/mfa/enroll — start TOTP setup (pending, unverified).
+userRouter.post("/security/mfa/enroll", requireAuth, async (_req, res) => {
+    const userId = res.locals.userId as string;
+    const userEmail = (res.locals.userEmail as string) || "user";
+    const db = createServerSupabase();
+    try {
+        const existing = await getFactor(userId, db);
+        if (existing?.verified) {
+            return void res.status(409).json({
+                detail: "An authenticator app is already set up.",
+            });
+        }
+        const secret = generateSecret();
+        await upsertPendingSecret(userId, secret, db);
+        const otpauthUrl = keyuri(userEmail, secret);
+        const qrCode = await QRCode.toDataURL(otpauthUrl);
+        res.json({ secret, otpauthUrl, qrCode });
+    } catch (err) {
+        res.status(500).json({ detail: errorMessage(err) });
+    }
+});
+
+// POST /user/security/mfa/verify — confirm the pending factor with a code.
+// On success marks the factor verified and re-issues a verified session token.
+userRouter.post("/security/mfa/verify", requireAuth, async (req, res) => {
+    const userId = res.locals.userId as string;
+    const code = readMfaCode(req.body);
+    if (!code)
+        return void res.status(400).json({ detail: "A 6-digit code is required." });
+    const db = createServerSupabase();
+    try {
+        const factor = await getFactor(userId, db);
+        if (!factor || !factor.secret) {
+            return void res.status(400).json({
+                detail: "Start authenticator setup before verifying a code.",
+            });
+        }
+        if (!verifyToken(factor.secret, code)) {
+            return void res
+                .status(400)
+                .json({ detail: "That code is incorrect or expired." });
+        }
+        if (!factor.verified) await markVerified(userId, db);
+        res.json({ token: mintVerifiedToken(res) });
+    } catch (err) {
+        res.status(500).json({ detail: errorMessage(err) });
+    }
+});
+
+// POST /user/security/mfa/challenge — step-up verification for an enrolled user
+// (login gate + sensitive actions). Re-issues a verified session token.
+userRouter.post("/security/mfa/challenge", requireAuth, async (req, res) => {
+    const userId = res.locals.userId as string;
+    const code = readMfaCode(req.body);
+    if (!code)
+        return void res.status(400).json({ detail: "A 6-digit code is required." });
+    const db = createServerSupabase();
+    try {
+        const factor = await getFactor(userId, db);
+        if (!factor || !factor.verified || !factor.secret) {
+            return void res
+                .status(400)
+                .json({ detail: "No authenticator app is set up." });
+        }
+        if (!verifyToken(factor.secret, code)) {
+            return void res
+                .status(400)
+                .json({ detail: "That code is incorrect or expired." });
+        }
+        res.json({ token: mintVerifiedToken(res) });
+    } catch (err) {
+        res.status(500).json({ detail: errorMessage(err) });
+    }
+});
+
+// DELETE /user/security/mfa — remove the authenticator app. Gated by step-up
+// (requireMfaIfEnrolled) so a stolen session cannot silently disable MFA.
+userRouter.delete(
+    "/security/mfa",
+    requireAuth,
+    requireMfaIfEnrolled,
+    async (_req, res) => {
+        const userId = res.locals.userId as string;
+        const db = createServerSupabase();
+        try {
+            await deleteFactor(userId, db);
+            await db
+                .from("user_profiles")
+                .update({
+                    mfa_on_login: false,
+                    updated_at: new Date().toISOString(),
+                })
+                .eq("user_id", userId);
+            res.status(204).send();
+        } catch (err) {
+            res.status(500).json({ detail: errorMessage(err) });
+        }
     },
 );
 
@@ -626,6 +786,90 @@ userRouter.put(
             const detail = errorMessage(err);
             console.error("[user/api-keys] save failed", {
                 provider,
+                error: detail,
+            });
+            res.status(500).json({ detail });
+        }
+    },
+);
+
+// GET /user/custom-models
+// Lists the models advertised by the user's custom OpenAI-compatible endpoint,
+// namespaced with the `custom/` prefix so they can be selected like any other
+// model. Requires a base URL to be configured (env or per-user).
+userRouter.get("/custom-models", requireAuth, async (_req, res) => {
+    const userId = res.locals.userId as string;
+    const db = createServerSupabase();
+    try {
+        const { url: baseUrl, source } = await getCustomBaseUrl(userId, db);
+        if (!baseUrl) {
+            return void res.json({ configured: false, source: null, models: [] });
+        }
+        const apiKeys = await getUserApiKeys(userId, db);
+        const models = await listCustomModels(apiKeys);
+        res.json({
+            configured: true,
+            source,
+            models: models.map((m) => ({
+                id: toCustomModelId(m.id),
+                label: m.name,
+            })),
+        });
+    } catch (err) {
+        const detail = errorMessage(err);
+        console.error("[user/custom-models] list failed", {
+            userId,
+            error: detail,
+        });
+        res.status(502).json({ detail });
+    }
+});
+
+// PUT /user/custom-llm — save or clear the per-user custom endpoint base URL.
+userRouter.put(
+    "/custom-llm",
+    requireAuth,
+    requireMfaIfEnrolled,
+    async (req, res) => {
+        const userId = res.locals.userId as string;
+        const raw = req.body?.base_url;
+        if (raw !== null && typeof raw !== "undefined" && typeof raw !== "string") {
+            return void res
+                .status(400)
+                .json({ detail: "base_url must be a string or null" });
+        }
+        const trimmed = typeof raw === "string" ? raw.trim() || null : null;
+        if (trimmed) {
+            let parsed: URL;
+            try {
+                parsed = new URL(trimmed);
+            } catch {
+                return void res
+                    .status(400)
+                    .json({ detail: "base_url must be a valid URL" });
+            }
+            if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+                return void res
+                    .status(400)
+                    .json({ detail: "base_url must be an http(s) URL" });
+            }
+        }
+        const db = createServerSupabase();
+        try {
+            const ensureError = await ensureProfileRow(db, userId);
+            if (ensureError)
+                return void res.status(500).json({ detail: ensureError.message });
+            await saveCustomBaseUrl(userId, trimmed, db);
+            const { url, source } = await getCustomBaseUrl(userId, db);
+            res.json({
+                customLlmBaseUrl: source === "user" ? url : null,
+                customLlmConfigured: !!url,
+                customLlmSource: source,
+            });
+        } catch (err) {
+            const detail = errorMessage(err);
+            console.error("[user/custom-llm] save failed", {
+                userId,
                 error: detail,
             });
             res.status(500).json({ detail });
@@ -948,9 +1192,7 @@ userRouter.delete(
         const db = createServerSupabase();
         try {
             await deleteUserAccountData(db, userId, userEmail);
-            const { error } = await db.auth.admin.deleteUser(userId);
-            if (error)
-                return void res.status(500).json({ detail: error.message });
+            await deleteAuthUser(userId);
             res.status(204).send();
         } catch (err) {
             const detail = errorMessage(err);

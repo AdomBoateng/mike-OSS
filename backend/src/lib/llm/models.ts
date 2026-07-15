@@ -45,10 +45,38 @@ const ALL_MODELS = new Set<string>([
 ]);
 
 // ---------------------------------------------------------------------------
+// Custom (OpenAI-compatible) models
+// ---------------------------------------------------------------------------
+// Models served by a user-supplied OpenAI-compatible endpoint (Ollama, LM
+// Studio, vLLM, …) are not known ahead of time, so they cannot live in the
+// static lists above. They are namespaced with a `custom/` prefix so the
+// prefix-based provider routing keeps working; the prefix is stripped before
+// the model name is sent to the endpoint.
+
+export const CUSTOM_MODEL_PREFIX = "custom/";
+
+export function isCustomModel(model: string): boolean {
+    return model.startsWith(CUSTOM_MODEL_PREFIX);
+}
+
+/** Wrap a raw endpoint model name (e.g. `llama3.2`) into a Mike model id. */
+export function toCustomModelId(rawName: string): string {
+    return `${CUSTOM_MODEL_PREFIX}${rawName}`;
+}
+
+/** Strip the `custom/` prefix to get the name the endpoint expects. */
+export function customModelName(model: string): string {
+    return isCustomModel(model)
+        ? model.slice(CUSTOM_MODEL_PREFIX.length)
+        : model;
+}
+
+// ---------------------------------------------------------------------------
 // Provider inference
 // ---------------------------------------------------------------------------
 
 export function providerForModel(model: string): Provider {
+    if (isCustomModel(model)) return "custom";
     if (model.startsWith("claude")) return "claude";
     if (model.startsWith("gemini")) return "gemini";
     if (model.startsWith("gpt-")) return "openai";
@@ -56,6 +84,6 @@ export function providerForModel(model: string): Provider {
 }
 
 export function resolveModel(id: string | null | undefined, fallback: string): string {
-    if (id && ALL_MODELS.has(id)) return id;
+    if (id && (ALL_MODELS.has(id) || isCustomModel(id))) return id;
     return fallback;
 }

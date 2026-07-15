@@ -1,32 +1,15 @@
 "use client";
 
-import {
-    useEffect,
-    useRef,
-    useState,
-    type ClipboardEvent,
-    type KeyboardEvent,
-} from "react";
+import { useState, useRef, useEffect, type ClipboardEvent, type KeyboardEvent } from "react";
 import { Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
 import { Modal } from "@/app/components/shared/Modal";
+import { useAuth } from "@/contexts/AuthContext";
+import { challengeMfa, getMfaStatus } from "@/app/lib/mikeApi";
 
-type MfaFactor = {
-    id: string;
-    friendly_name?: string | null;
-    factor_type: string;
-};
-
-const isDev = process.env.NODE_ENV !== "production";
-const devLog = (...args: Parameters<typeof console.log>) => {
-    if (isDev) console.log(...args);
-};
-
+/** Whether the current session must step up (enrolled but not yet verified). */
 export async function needsMfaVerification() {
-    const { data, error } =
-        await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
-    if (error) throw error;
-    return data.nextLevel === "aal2" && data.currentLevel !== "aal2";
+    const status = await getMfaStatus();
+    return status.enrolled && !status.sessionVerified;
 }
 
 interface MfaVerificationPopupProps {
@@ -44,53 +27,17 @@ export function MfaVerificationPopup({
     title = "Two-factor verification required",
     message = "Enter a code from your authenticator app to continue.",
 }: MfaVerificationPopupProps) {
-    const [factors, setFactors] = useState<MfaFactor[]>([]);
-    const [selectedFactorId, setSelectedFactorId] = useState("");
+    const { applySessionToken } = useAuth();
     const [code, setCode] = useState("");
-    const [loading, setLoading] = useState(false);
     const [verifying, setVerifying] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const canVerify =
-        !verifying &&
-        !loading &&
-        !!selectedFactorId &&
-        code.trim().length === 6;
+    const canVerify = !verifying && code.trim().length === 6;
 
     useEffect(() => {
-        if (!open) return;
-        let cancelled = false;
-        devLog("[mfa-popup] opened");
-
-        async function loadFactors() {
-            setLoading(true);
-            setError(null);
+        if (open) {
             setCode("");
-            const { data, error: listError } =
-                await supabase.auth.mfa.listFactors();
-            if (cancelled) return;
-            if (listError) {
-                devLog("[mfa-popup] list factors failed", {
-                    error: listError.message,
-                });
-                setError(listError.message);
-                setFactors([]);
-                setSelectedFactorId("");
-            } else {
-                const verified = (data.totp ?? []) as MfaFactor[];
-                devLog("[mfa-popup] factors loaded", {
-                    totpCount: verified.length,
-                    selectedFactorId: verified[0]?.id ?? null,
-                });
-                setFactors(verified);
-                setSelectedFactorId(verified[0]?.id ?? "");
-            }
-            setLoading(false);
+            setError(null);
         }
-
-        void loadFactors();
-        return () => {
-            cancelled = true;
-        };
     }, [open]);
 
     async function verify() {
@@ -98,25 +45,20 @@ export function MfaVerificationPopup({
 
         setVerifying(true);
         setError(null);
-        devLog("[mfa-popup] verifying code", { factorId: selectedFactorId });
-        const { error: verifyError } =
-            await supabase.auth.mfa.challengeAndVerify({
-                factorId: selectedFactorId,
-                code: code.trim(),
-            });
-        setVerifying(false);
-
-        if (verifyError) {
-            devLog("[mfa-popup] verification failed", {
-                error: verifyError.message,
-            });
-            setError(verifyError.message);
-            return;
+        try {
+            const token = await challengeMfa(code.trim());
+            applySessionToken(token);
+            setCode("");
+            onVerified();
+        } catch (err) {
+            setError(
+                err instanceof Error
+                    ? err.message
+                    : "That code is incorrect or expired.",
+            );
+        } finally {
+            setVerifying(false);
         }
-
-        devLog("[mfa-popup] verification succeeded");
-        setCode("");
-        onVerified();
     }
 
     if (!open) return null;
@@ -148,44 +90,16 @@ export function MfaVerificationPopup({
         >
             <div className="space-y-5 pb-2 pt-0">
                 <p className="text-sm text-gray-500 pb-6">{message}</p>
-                {loading ? (
-                    <div className="flex h-13 items-center justify-center text-sm text-gray-500">
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Loading authenticator...
-                    </div>
-                ) : factors.length === 0 ? (
-                    <p className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-600">
-                        No verified authenticator factor is available for this
-                        session.
-                    </p>
-                ) : (
-                    <div className="space-y-4">
-                        {factors.length > 1 && (
-                            <select
-                                value={selectedFactorId}
-                                onChange={(event) =>
-                                    setSelectedFactorId(event.target.value)
-                                }
-                                className="h-9 w-full rounded-lg bg-gray-100 px-3 text-sm text-gray-900 outline-none focus-visible:ring-2 focus-visible:ring-gray-300/45"
-                            >
-                                {factors.map((factor) => (
-                                    <option key={factor.id} value={factor.id}>
-                                        {factor.friendly_name ||
-                                            "Authenticator app"}
-                                    </option>
-                                ))}
-                            </select>
-                        )}
-                        <VerificationCodeInput
-                            value={code}
-                            onChange={setCode}
-                            disabled={verifying}
-                            autoFocus={open && !loading}
-                            onSubmit={() => void verify()}
-                            canSubmit={canVerify}
-                        />
-                    </div>
-                )}
+                <div className="space-y-4">
+                    <VerificationCodeInput
+                        value={code}
+                        onChange={setCode}
+                        disabled={verifying}
+                        autoFocus={open}
+                        onSubmit={() => void verify()}
+                        canSubmit={canVerify}
+                    />
+                </div>
                 {error && <p className="text-xs text-red-600">{error}</p>}
             </div>
         </Modal>

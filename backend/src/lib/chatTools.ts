@@ -24,12 +24,12 @@ import {
   verifyCourtlistenerCitations,
 } from "./courtlistener";
 import {
-  COURTLISTENER_SYSTEM_PROMPT,
   COURTLISTENER_TOOL_NAMES,
-  COURTLISTENER_TOOLS,
   type CaseCitationEvent,
   type CourtlistenerToolEvent,
 } from "./legalSourcesTools/courtlistenerTools";
+import { defaultToolSources, buildToolSourceContext } from "./toolSources";
+import { availableProvidersFrom } from "./userApiKeys";
 import {
   buildUserMcpTools,
   executeMcpToolCall,
@@ -109,6 +109,7 @@ const SYSTEM_PROMPT_BEFORE_RESEARCH = `You are Mike, an AI legal assistant for l
 CORE RULES:
 - Be precise, professional, and evidence-aware.
 - Do not fabricate document content.
+- Complete the user's request end-to-end using the tools before you answer. When a task needs several tool calls, chain them yourself — do not stop after the first step to describe what you could do next or to ask the user which tool to use. Only ask the user when you are genuinely blocked by ambiguity you cannot resolve (e.g. two different matches), never merely to confirm an obvious next step.
 - Use at most 10 tool-use rounds per response. Batch independent tool calls and leave room for the final answer.
 - If the user selects a workflow with [Workflow: <title> (id: <id>)], immediately call read_workflow with that id and follow the workflow before doing anything else.
 
@@ -170,8 +171,13 @@ GENERAL GUIDANCE:
  * does not have. Gated per-user by the Legal Research > US feature toggle.
  */
 export function buildSystemPrompt(includeResearchTools = true): string {
-  return includeResearchTools
-    ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${COURTLISTENER_SYSTEM_PROMPT}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
+  const research = includeResearchTools
+    ? defaultToolSources.systemPrompt(
+        buildToolSourceContext(includeResearchTools),
+      )
+    : "";
+  return research
+    ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${research}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
     : `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${SYSTEM_PROMPT_AFTER_RESEARCH}`;
 }
 
@@ -3965,7 +3971,12 @@ export async function runLLMStream(params: {
     signal,
     projectId,
   } = params;
-  const researchTools = includeResearchTools ? COURTLISTENER_TOOLS : [];
+  const researchTools = defaultToolSources.tools(
+    buildToolSourceContext(
+      includeResearchTools,
+      availableProvidersFrom(apiKeys),
+    ),
+  );
   const mcpTools = await buildUserMcpTools(userId, db);
   const baseTools = [...TOOLS, ...researchTools, ...WORKFLOW_TOOLS];
   const activeTools = extraTools?.length

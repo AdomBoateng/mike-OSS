@@ -2,7 +2,7 @@
 // Callers always speak OpenAI-style tools + { role, content } messages; each
 // provider translates internally.
 
-export type Provider = "claude" | "gemini" | "openai";
+export type Provider = "claude" | "gemini" | "openai" | "custom";
 
 export type OpenAIToolSchema = {
     type: "function";
@@ -42,6 +42,10 @@ export type UserApiKeys = {
     openai?: string | null;
     openrouter?: string | null;
     courtlistener?: string | null;
+    /** API key for the custom OpenAI-compatible endpoint (optional for e.g. Ollama). */
+    custom?: string | null;
+    /** Base URL of the custom OpenAI-compatible endpoint, e.g. http://localhost:11434/v1 */
+    customBaseUrl?: string | null;
 };
 
 export type StreamChatParams = {

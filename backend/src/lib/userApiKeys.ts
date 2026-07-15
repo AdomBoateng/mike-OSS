@@ -8,6 +8,7 @@ export type ApiKeyProvider =
     | "gemini"
     | "openai"
     | "openrouter"
+    | "custom"
     | "courtlistener";
 export type ApiKeySource = "user" | "env" | null;
 export type ApiKeyStatus = Record<ApiKeyProvider, boolean> & {
@@ -26,6 +27,7 @@ const PROVIDERS: ApiKeyProvider[] = [
     "gemini",
     "openai",
     "openrouter",
+    "custom",
     "courtlistener",
 ];
 
@@ -43,6 +45,8 @@ function envApiKey(provider: ApiKeyProvider): string | null {
             return process.env.OPENAI_API_KEY?.trim() || null;
         case "openrouter":
             return process.env.OPENROUTER_API_KEY?.trim() || null;
+        case "custom":
+            return process.env.CUSTOM_LLM_API_KEY?.trim() || null;
         case "courtlistener":
             return process.env.COURTLISTENER_API_TOKEN?.trim() || null;
         default:
@@ -115,12 +119,14 @@ export async function getUserApiKeyStatus(
         gemini: false,
         openai: false,
         openrouter: false,
+        custom: false,
         courtlistener: false,
         sources: {
             claude: null,
             gemini: null,
             openai: null,
             openrouter: null,
+            custom: null,
             courtlistener: null,
         },
     };
@@ -149,6 +155,51 @@ export async function getUserApiKeyStatus(
     return status;
 }
 
+/**
+ * Resolve the base URL for the custom OpenAI-compatible endpoint: the user's
+ * stored override (user_profiles.custom_llm_base_url) if present, otherwise the
+ * CUSTOM_LLM_BASE_URL env fallback. Tolerates databases that predate the column.
+ */
+export async function getCustomBaseUrl(
+    userId: string,
+    db: Db = createServerSupabase(),
+): Promise<{ url: string | null; source: ApiKeySource }> {
+    const envUrl = process.env.CUSTOM_LLM_BASE_URL?.trim() || null;
+    const { data, error } = await db
+        .from("user_profiles")
+        .select("custom_llm_base_url")
+        .eq("user_id", userId)
+        .maybeSingle();
+    if (error) {
+        // Older databases may lack the column; fall back to env silently.
+        return { url: envUrl, source: envUrl ? "env" : null };
+    }
+    const userUrl =
+        typeof (data as { custom_llm_base_url?: unknown } | null)
+            ?.custom_llm_base_url === "string"
+            ? ((data as { custom_llm_base_url: string }).custom_llm_base_url.trim() ||
+              null)
+            : null;
+    if (userUrl) return { url: userUrl, source: "user" };
+    return { url: envUrl, source: envUrl ? "env" : null };
+}
+
+export async function saveCustomBaseUrl(
+    userId: string,
+    url: string | null,
+    db: Db = createServerSupabase(),
+): Promise<void> {
+    const normalized = url?.trim() || null;
+    const { error } = await db
+        .from("user_profiles")
+        .update({
+            custom_llm_base_url: normalized,
+            updated_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
+    if (error) throw error;
+}
+
 export async function getUserApiKeys(
     userId: string,
     db: Db = createServerSupabase(),
@@ -158,6 +209,7 @@ export async function getUserApiKeys(
         gemini: envApiKey("gemini"),
         openai: envApiKey("openai"),
         openrouter: envApiKey("openrouter"),
+        custom: envApiKey("custom"),
         courtlistener: envApiKey("courtlistener"),
     };
 
@@ -174,7 +226,28 @@ export async function getUserApiKeys(
         apiKeys[provider] = decrypt(row);
     }
 
+    const { url: customBaseUrl } = await getCustomBaseUrl(userId, db);
+    apiKeys.customBaseUrl = customBaseUrl;
+
     return apiKeys;
+}
+
+/**
+ * The set of API-key providers with a usable key for a request — either a
+ * user-supplied key on `apiKeys` or a configured env fallback. Used to build the
+ * ToolSource gating context so key-dependent sources are offered only when a key
+ * is present.
+ */
+export function availableProvidersFrom(
+    apiKeys?: UserApiKeys,
+): Set<ApiKeyProvider> {
+    const providers = new Set<ApiKeyProvider>();
+    for (const provider of PROVIDERS) {
+        if (apiKeys?.[provider]?.trim() || hasEnvApiKey(provider)) {
+            providers.add(provider);
+        }
+    }
+    return providers;
 }
 
 export async function saveUserApiKey(

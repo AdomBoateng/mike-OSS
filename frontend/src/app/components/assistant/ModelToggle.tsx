@@ -16,7 +16,7 @@ import type { ApiKeyState } from "@/app/lib/mikeApi";
 export interface ModelOption {
     id: string;
     label: string;
-    group: "Anthropic" | "Google" | "OpenAI";
+    group: "Anthropic" | "Google" | "OpenAI" | "Custom";
 }
 
 export const MODELS: ModelOption[] = [
@@ -44,22 +44,44 @@ export const SETTINGS_MODELS: ModelOption[] = [
 
 export const DEFAULT_MODEL_ID = "gemini-3-flash-preview";
 
+/** Custom (OpenAI-compatible) model ids are namespaced with this prefix. */
+export const CUSTOM_MODEL_PREFIX = "custom/";
+
+export function isCustomModelId(id: string): boolean {
+    return id.startsWith(CUSTOM_MODEL_PREFIX);
+}
+
 export const ALLOWED_MODEL_IDS = new Set(MODELS.map((m) => m.id));
 
-const GROUP_ORDER: ModelOption["group"][] = ["Anthropic", "Google", "OpenAI"];
+// Only custom (OpenAI-compatible endpoint) models are offered — the built-in
+// Anthropic/Google/OpenAI providers were removed in favour of self-hosted
+// endpoints. The static MODELS lists are kept only so legacy stored model ids
+// still resolve to a label; they are not shown for selection.
+const GROUP_ORDER: ModelOption["group"][] = ["Custom"];
 
 interface Props {
     value: string;
     onChange: (id: string) => void;
     apiKeys?: ApiKeyState;
+    /** Models fetched live from the custom endpoint (already prefixed). */
+    customModels?: ModelOption[];
+    /** Whether a custom endpoint base URL is configured. */
+    customConfigured?: boolean;
 }
 
-export function ModelToggle({ value, onChange, apiKeys }: Props) {
+export function ModelToggle({
+    value,
+    onChange,
+    apiKeys,
+    customModels = [],
+    customConfigured = false,
+}: Props) {
     const [isOpen, setIsOpen] = useState(false);
-    const selected = MODELS.find((m) => m.id === value);
+    const allModels = [...MODELS, ...customModels];
+    const selected = allModels.find((m) => m.id === value);
     const selectedLabel = selected?.label ?? "Model";
     const selectedAvailable = apiKeys
-        ? isModelAvailable(value, apiKeys)
+        ? isModelAvailable(value, apiKeys, customConfigured)
         : true;
 
     return (
@@ -85,7 +107,7 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56 z-50" side="top" align="end">
                 {GROUP_ORDER.map((group, gi) => {
-                    const items = MODELS.filter((m) => m.group === group);
+                    const items = allModels.filter((m) => m.group === group);
                     if (items.length === 0) return null;
                     return (
                         <div key={group}>
@@ -95,7 +117,11 @@ export function ModelToggle({ value, onChange, apiKeys }: Props) {
                             </DropdownMenuLabel>
                             {items.map((m) => {
                                 const available = apiKeys
-                                    ? isModelAvailable(m.id, apiKeys)
+                                    ? isModelAvailable(
+                                          m.id,
+                                          apiKeys,
+                                          customConfigured,
+                                      )
                                     : true;
                                 return (
                                     <DropdownMenuItem

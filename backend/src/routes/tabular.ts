@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
+import { listAuthUsers } from "../lib/authUsers";
 import { downloadFile } from "../lib/storage";
 import {
     attachActiveVersionPaths,
@@ -62,11 +63,22 @@ export const tabularRouter = Router();
 function providerLabel(provider: Provider): string {
     if (provider === "claude") return "Anthropic";
     if (provider === "openai") return "OpenAI";
+    if (provider === "custom") return "Custom endpoint";
     return "Gemini";
 }
 
 function missingModelApiKey(model: string, apiKeys: UserApiKeys) {
     const provider = providerForModel(model);
+    // A custom OpenAI-compatible endpoint is gated on its base URL, not an API
+    // key (local servers such as Ollama accept no key).
+    if (provider === "custom") {
+        if (apiKeys.customBaseUrl?.trim()) return null;
+        return {
+            provider,
+            model,
+            detail: `A custom endpoint base URL is required to use ${model}. Add one in Account > Models & API Keys or select a different tabular review model.`,
+        };
+    }
     if (apiKeys[provider]?.trim()) return null;
     return {
         provider,
@@ -309,10 +321,7 @@ tabularRouter.get("/:reviewId/people", requireAuth, async (req, res) => {
 
     // Same pattern as /projects/:id/people: walk auth.users to map emails
     // to user_ids, then pull display_names from user_profiles by user_id.
-    const { data: usersData } = await db.auth.admin.listUsers({
-        perPage: 1000,
-    });
-    const allUsers = usersData?.users ?? [];
+    const allUsers = await listAuthUsers();
     const userByEmail = new Map<string, { id: string; email: string }>();
     const userById = new Map<string, { id: string; email: string }>();
     for (const u of allUsers) {

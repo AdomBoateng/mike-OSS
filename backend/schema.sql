@@ -20,6 +20,7 @@ create table if not exists public.user_profiles (
   title_model text,
   tabular_model text not null default 'gemini-3-flash-preview',
   quote_model text,
+  custom_llm_base_url text,
   mfa_on_login boolean not null default false,
   legal_research_us boolean not null default true,
   created_at timestamptz not null default now(),
@@ -54,7 +55,7 @@ create trigger on_auth_user_created
 create table if not exists public.user_api_keys (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  provider text not null check (provider in ('claude', 'gemini', 'openai', 'openrouter', 'courtlistener')),
+  provider text not null check (provider in ('claude', 'gemini', 'openai', 'openrouter', 'custom', 'courtlistener')),
   encrypted_key text not null,
   iv text not null,
   auth_tag text not null,
@@ -67,6 +68,21 @@ create index if not exists idx_user_api_keys_user
   on public.user_api_keys(user_id);
 
 alter table public.user_api_keys enable row level security;
+
+-- TOTP multi-factor authentication. One factor per user; the secret is stored
+-- encrypted (AES-256-GCM, see lib/secretCrypto.ts). `verified` flips true once
+-- the user confirms a code during enrollment.
+create table if not exists public.user_totp_factors (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  encrypted_secret text not null,
+  iv text not null,
+  auth_tag text not null,
+  verified boolean not null default false,
+  created_at timestamptz not null default now(),
+  verified_at timestamptz
+);
+
+alter table public.user_totp_factors enable row level security;
 
 create table if not exists public.user_mcp_connectors (
   id uuid primary key default gen_random_uuid(),
@@ -439,7 +455,11 @@ create table if not exists public.chats (
   project_id uuid references public.projects(id) on delete cascade,
   user_id text not null,
   title text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Bumped to the time of the most recent message (see the
+  -- touch_chat_updated_at trigger on chat_messages) so the sidebar can
+  -- surface "last used" sessions and sort recently-active chats first.
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_chats_user
@@ -457,7 +477,8 @@ returns table (
   project_id uuid,
   user_id text,
   title text,
-  created_at timestamptz
+  created_at timestamptz,
+  updated_at timestamptz
 )
 language sql
 stable
@@ -467,7 +488,8 @@ as $$
     c.project_id,
     c.user_id,
     c.title,
-    c.created_at
+    c.created_at,
+    c.updated_at
   from public.chats c
   where c.user_id = p_user_id
      or exists (
@@ -476,7 +498,7 @@ as $$
       where p.id = c.project_id
         and p.user_id = p_user_id
     )
-  order by c.created_at desc
+  order by c.updated_at desc
   limit case
     when p_limit is null then null
     else greatest(1, least(p_limit, 100))
@@ -489,12 +511,35 @@ create table if not exists public.chat_messages (
   role text not null,
   content jsonb,
   files jsonb,
+  -- Workflow chip attached to a user turn (id + title). Persisted so the
+  -- user's message renders with its workflow badge when the chat reloads.
+  workflow jsonb,
   annotations jsonb,
   created_at timestamptz not null default now()
 );
 
 create index if not exists idx_chat_messages_chat
   on public.chat_messages(chat_id);
+
+-- Keep chats.updated_at in step with the latest message so "last used"
+-- ordering and the sidebar's edited timestamp stay accurate across every
+-- write path (assistant + project chat routes both insert here).
+create or replace function public.touch_chat_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  update public.chats
+    set updated_at = now()
+    where id = new.chat_id;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_chat_message_insert on public.chat_messages;
+create trigger on_chat_message_insert
+  after insert on public.chat_messages
+  for each row execute procedure public.touch_chat_updated_at();
 
 do $$
 begin
@@ -813,6 +858,7 @@ revoke all on public.tabular_cells from anon, authenticated;
 revoke all on public.tabular_review_chats from anon, authenticated;
 revoke all on public.tabular_review_chat_messages from anon, authenticated;
 revoke all on public.user_api_keys from anon, authenticated;
+revoke all on public.user_totp_factors from anon, authenticated;
 revoke all on public.user_mcp_connectors from anon, authenticated;
 revoke all on public.user_mcp_oauth_tokens from anon, authenticated;
 revoke all on public.user_mcp_oauth_states from anon, authenticated;
