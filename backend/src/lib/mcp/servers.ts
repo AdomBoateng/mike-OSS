@@ -447,15 +447,38 @@ export async function buildUserMcpTools(
     userId: string,
     db: Db = createServerSupabase(),
 ): Promise<OpenAIToolSchema[]> {
+    // Two-step (the query shim has no PostgREST embedded joins): the user's
+    // enabled connectors, then their enabled / no-confirmation tools. This is
+    // the AND-of-both-filters the previous `!inner` join expressed.
+    const { data: connectors, error: connError } = await db
+        .from("user_mcp_connectors")
+        .select("id, name")
+        .eq("user_id", userId)
+        .eq("enabled", true);
+    if (connError) {
+        console.error("[mcp-connectors] failed to load connectors", {
+            userId,
+            error: connError.message,
+        });
+        return [];
+    }
+    const connectorList = (connectors ?? []) as { id: string; name?: string }[];
+    if (connectorList.length === 0) return [];
+    const connectorNameById = new Map(
+        connectorList.map((c) => [c.id, c.name] as const),
+    );
+
     const { data, error } = await db
         .from("user_mcp_connector_tools")
         .select(
-            "openai_tool_name, tool_name, title, description, input_schema, requires_confirmation, enabled, user_mcp_connectors!inner(id, user_id, name, enabled)",
+            "openai_tool_name, tool_name, title, description, input_schema, requires_confirmation, enabled, connector_id",
         )
         .eq("enabled", true)
         .eq("requires_confirmation", false)
-        .eq("user_mcp_connectors.user_id", userId)
-        .eq("user_mcp_connectors.enabled", true);
+        .in(
+            "connector_id",
+            connectorList.map((c) => c.id),
+        );
     if (error) {
         console.error("[mcp-connectors] failed to load tools", {
             userId,
@@ -466,13 +489,7 @@ export async function buildUserMcpTools(
 
     return (data ?? []).map((row) => {
         const raw = row as Record<string, unknown>;
-        const connector = raw.user_mcp_connectors as
-            | { name?: string }
-            | { name?: string }[]
-            | undefined;
-        const connectorName = Array.isArray(connector)
-            ? connector[0]?.name
-            : connector?.name;
+        const connectorName = connectorNameById.get(String(raw.connector_id));
         const toolName = String(raw.tool_name);
         const title = typeof raw.title === "string" ? raw.title : toolName;
         const description =
