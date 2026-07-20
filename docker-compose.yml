@@ -1,25 +1,23 @@
-# Local infrastructure for self-hosted Mike.
+# Self-hosted Mike — full stack (Postgres + backend + frontend).
 #
-# Spin up:        docker compose up -d
-# Spin up + mail: docker compose --profile mail up -d   (adds Mailpit, see below)
-# Logs:           docker compose logs -f postgres
-# Reset DB:       docker compose down -v   (drops the volume so init scripts re-run)
+# Spin up:   docker compose up -d --build
+# Logs:      docker compose logs -f backend
+# Reset DB:  docker compose down -v   (drops the volume so init scripts re-run)
 #
-# On first start (empty volume) Postgres runs, in alphabetical order, every
-# file mounted into /docker-entrypoint-initdb.d:
-#   00-auth-shim.sql  — minimal auth.users so the Supabase-authored schema loads
-#   01-schema.sql     — the application schema (backend/schema.sql, unmodified)
-# These run ONCE, creating every table, function and trigger the app needs. To
-# rebuild from scratch (e.g. after editing schema.sql): `docker compose down -v`
-# then `docker compose up -d`.
+# Access from any machine on the network:  http://<server-ip>:3000
+#   - frontend is on :3000, backend API on :3001 (the browser derives the API
+#     host from the page URL, so no per-IP rebuild is needed).
 #
-# To bootstrap a database that is NOT this container (an existing Postgres you
-# point DATABASE_URL at), run the same two files in order, once, against it:
-#   psql "$DATABASE_URL" -f backend/db/initdb/00-auth-shim.sql
-#   psql "$DATABASE_URL" -f backend/schema.sql
+# Requires backend/.env on the host (LDAP, S3/surf, session + other secrets).
+# Copy backend/.env.example -> backend/.env and fill it in. DATABASE_URL and
+# FRONTEND_URL are overridden below for the container network, so their values
+# in .env don't matter here.
 #
-# LDAP is NOT part of this stack — it is an external directory (see the LDAP
-# config file in the repo root); the app connects to it over the network.
+# On first start (empty volume) Postgres runs backend/db/initdb/00-auth-shim.sql
+# then backend/schema.sql once, creating every table/function/trigger.
+#
+# LDAP (172.18.x) and surf/S3 (172.20.x) are external: the host — and therefore
+# the containers via NAT — must be able to route to them.
 
 services:
   postgres:
@@ -31,8 +29,8 @@ services:
       POSTGRES_PASSWORD: mike_local_dev
       POSTGRES_DB: mike
     ports:
-      # host:container. Host port is 5433 to avoid clashing with a native
-      # Postgres install that may already own 5432. DATABASE_URL uses 5433.
+      # Exposed for host-side debugging (psql on :5433). Remove for a locked-down
+      # deployment — the backend reaches it internally on the compose network.
       - "5433:5432"
     volumes:
       - mike_pgdata:/var/lib/postgresql/data
@@ -44,25 +42,43 @@ services:
       timeout: 5s
       retries: 10
 
-  # Local catch-all SMTP server for testing project-invitation emails without a
-  # real relay. Opt-in: only starts with `docker compose --profile mail up -d`.
-  #   - SMTP endpoint for the backend:  localhost:1025
-  #   - Web inbox to view captured mail: http://localhost:8025
-  # Point the backend at it by setting in backend/.env:
-  #   SMTP_HOST=localhost
-  #   SMTP_PORT=1025
-  #   SMTP_SECURE=false
-  #   SMTP_FROM=Mike <no-reply@mike.local>
-  # mailpit:
-  #   image: axllent/mailpit:latest
-  #   container_name: mike-mailpit
-  #   profiles: ["mail"]
-  #   restart: unless-stopped
-  #   ports:
-  #     - "1025:1025" # SMTP
-  #     - "8025:8025" # web UI
-  #   environment:
-  #     MP_MAX_MESSAGES: 500
+  backend:
+    build: ./backend
+    container_name: mike-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override for the container network (service name, internal port).
+      DATABASE_URL: postgres://mike:mike_local_dev@postgres:5432/mike
+      # Reflect any request origin — LAN access by server IP. Lock to specific
+      # origins (comma-separated) for an internet-facing deployment.
+      FRONTEND_URL: "*"
+      PORT: "3001"
+      NODE_ENV: production
+      # Clear any host (e.g. Windows) soffice path from .env; the image ships
+      # LibreOffice and convert.ts auto-discovers /usr/bin/soffice.
+      SOFFICE_BINARY_PATH: ""
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: mike-frontend
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      # Leave NEXT_PUBLIC_API_BASE_URL unset so the browser derives the backend
+      # URL from the page host (http://<server-ip>:3001). Set it only to pin a
+      # fixed backend URL.
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
 
 volumes:
   mike_pgdata:

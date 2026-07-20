@@ -130,9 +130,25 @@ app.use(
   }),
 );
 
+// CORS. FRONTEND_URL is a comma-separated allowlist of origins. Set it to "*"
+// to reflect any request origin — useful for LAN access where the app is reached
+// by the server's IP (auth is Bearer-token, not cookie, so reflecting is safe
+// here). Lock it to specific origins for internet-facing deployments.
+const corsOrigins = (process.env.FRONTEND_URL ?? "http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+const reflectAnyOrigin = corsOrigins.includes("*");
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
+    origin: reflectAnyOrigin
+      ? true
+      : (origin, callback) => {
+          // Allow same-origin / non-browser requests (no Origin header).
+          if (!origin || corsOrigins.includes(origin)) callback(null, true);
+          else callback(null, false);
+        },
     credentials: true,
   }),
 );
