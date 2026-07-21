@@ -1,5 +1,6 @@
 "use client";
 
+import { getApiBase } from "@/lib/apiBase";
 import { useState } from "react";
 import { getStoredToken } from "@/lib/authToken";
 import type { EditAnnotation } from "../shared/types";
@@ -222,7 +223,7 @@ export function EditCard({
         try {
             const token = getStoredToken();
             const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+                getApiBase();
             const resp = await fetch(
                 `${apiBase}/single-documents/${annotation.document_id}/edits/${annotation.edit_id}/${verb}`,
                 {

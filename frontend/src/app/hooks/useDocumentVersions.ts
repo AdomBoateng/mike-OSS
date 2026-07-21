@@ -1,5 +1,6 @@
 "use client";
 
+import { getApiBase } from "@/lib/apiBase";
 import { useEffect, useState } from "react";
 import { getStoredToken } from "@/lib/authToken";
 
@@ -54,8 +55,7 @@ export function useDocumentVersions(
             try {
                 const token = getStoredToken();
                 const apiBase =
-                    process.env.NEXT_PUBLIC_API_BASE_URL ??
-                    "http://localhost:3001";
+                    getApiBase();
                 const resp = await fetch(
                     `${apiBase}/single-documents/${documentId}/versions`,
                     {

@@ -79,7 +79,14 @@ documentsRouter.post(
   async (req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
-    await handleDocumentUpload(req, res, userId, null, db);
+    try {
+      await handleDocumentUpload(req, res, userId, null, db);
+    } catch (err) {
+      console.error("[single-documents/upload] unhandled error", err);
+      if (!res.headersSent) {
+        res.status(500).json({ detail: "Upload failed. Please try again." });
+      }
+    }
   },
 );
 
@@ -1435,6 +1442,7 @@ async function handleDocumentUpload(
       : updated;
     return void res.status(201).json(responseDoc);
   } catch (e) {
+    console.error("[single-documents/upload] processing failed", e);
     await db.from("documents").update({ status: "error" }).eq("id", doc.id);
     return void res
       .status(500)

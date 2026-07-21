@@ -745,7 +745,14 @@ projectsRouter.post(
     if (!access.ok)
       return void res.status(404).json({ detail: "Project not found" });
 
-    await handleDocumentUpload(req, res, userId, projectId, db);
+    try {
+      await handleDocumentUpload(req, res, userId, projectId, db);
+    } catch (err) {
+      console.error("[projects/documents/upload] unhandled error", err);
+      if (!res.headersSent) {
+        res.status(500).json({ detail: "Upload failed. Please try again." });
+      }
+    }
   },
 );
 

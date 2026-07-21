@@ -1,5 +1,6 @@
 "use client";
 
+import { getApiBase } from "@/lib/apiBase";
 import { useEffect, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
@@ -148,7 +149,7 @@ async function tagWIdsOnRenderedDom(
     try {
         const token = getStoredToken();
         const apiBase =
-            process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+            getApiBase();
         const qs = versionId
             ? `?version_id=${encodeURIComponent(versionId)}`
             : "";

@@ -4,6 +4,7 @@
  */
 
 import { getStoredToken, setStoredToken } from "@/lib/authToken";
+import { getApiBase } from "@/lib/apiBase";
 import type {
     AssistantEvent,
     Chat,
@@ -34,23 +35,9 @@ interface ServerChatDetailOut {
     messages: ServerMessage[];
 }
 
-// Resolve the backend base URL.
-// - If NEXT_PUBLIC_API_BASE_URL is set (baked at build), use it verbatim.
-// - Otherwise, in the browser, derive it from the host the app was loaded from
-//   so hitting the app at http://<server-ip>:3000 targets the backend at
-//   http://<server-ip>:<port> (default 3001) — no per-IP rebuild needed.
-// - On the server (SSR) fall back to localhost; the API is only called client-side.
-function resolveApiBase(): string {
-    const configured = process.env.NEXT_PUBLIC_API_BASE_URL;
-    if (configured && configured.trim()) return configured.trim();
-    if (typeof window !== "undefined") {
-        const port = process.env.NEXT_PUBLIC_API_PORT || "3001";
-        return `${window.location.protocol}//${window.location.hostname}:${port}`;
-    }
-    return "http://localhost:3001";
-}
-
-const API_BASE = resolveApiBase();
+// Backend base URL, resolved at runtime (see @/lib/apiBase) so one build works
+// for any host.
+const API_BASE = getApiBase();
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
     if (isDev) console.log(...args);

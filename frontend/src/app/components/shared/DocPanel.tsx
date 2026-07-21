@@ -1,5 +1,6 @@
 "use client";
 
+import { getApiBase } from "@/lib/apiBase";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { getStoredToken } from "@/lib/authToken";
@@ -411,8 +412,7 @@ function EditResolveButtons({
             try {
                 const token = getStoredToken();
                 const apiBase =
-                    process.env.NEXT_PUBLIC_API_BASE_URL ??
-                    "http://localhost:3001";
+                    getApiBase();
                 const resp = await fetch(
                     `${apiBase}/single-documents/${edit.document_id}/edits/${edit.edit_id}/${verb}`,
                     {
@@ -510,7 +510,7 @@ function DownloadButton({
         try {
             const token = getStoredToken();
             const apiBase =
-                process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+                getApiBase();
             const qs = versionId
                 ? `?version_id=${encodeURIComponent(versionId)}`
                 : "";

@@ -1,5 +1,6 @@
 "use client";
 
+import { getApiBase } from "@/lib/apiBase";
 import { useCallback, useEffect, useState } from "react";
 import {
     ChevronDown,
@@ -81,7 +82,7 @@ type McpOAuthPopupMessage = {
 };
 
 const mcpOAuthMessageOrigin = new URL(
-    process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001",
+    getApiBase(),
 ).origin;
 
 function parseCustomHeaders(raw: string): Record<string, string> | undefined {
