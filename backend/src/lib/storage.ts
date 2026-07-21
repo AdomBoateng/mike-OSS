@@ -21,6 +21,18 @@ import {
 } from "@aws-sdk/client-s3";
 import * as S3Commands from "@aws-sdk/client-s3";
 import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+
+// Fail fast instead of hanging forever if the storage endpoint is unreachable.
+// connectionTimeout bounds the TCP connect (catches an unreachable/blocked surf
+// quickly); requestTimeout is a socket-inactivity timeout (does not kill a slow
+// but progressing large upload — the timer resets as data flows). Overridable.
+const S3_CONNECT_TIMEOUT_MS = Number(
+  process.env.S3_CONNECT_TIMEOUT_MS ?? "5000",
+);
+const S3_REQUEST_TIMEOUT_MS = Number(
+  process.env.S3_REQUEST_TIMEOUT_MS ?? "60000",
+);
 
 const GetObjectCommand = (S3Commands as any).GetObjectCommand;
 
@@ -98,6 +110,13 @@ function getClient(): S3Client {
         accessKeyId: config.accessKeyId,
         secretAccessKey: config.secretAccessKey,
       },
+      // Keep retries low so an unreachable endpoint surfaces an error in seconds
+      // rather than retrying the full (already time-bounded) request several times.
+      maxAttempts: 2,
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: S3_CONNECT_TIMEOUT_MS,
+        requestTimeout: S3_REQUEST_TIMEOUT_MS,
+      }),
     });
   }
   return cachedClient;
