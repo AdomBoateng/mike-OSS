@@ -71,6 +71,16 @@ function getTransporter(cfg: SmtpConfig): Transporter {
 }
 
 /**
+ * Verify SMTP connectivity + auth without sending mail (transporter.verify()).
+ * Throws if SMTP is not configured or the handshake fails.
+ */
+export async function verifySmtp(): Promise<void> {
+  const cfg = resolveSmtpConfig();
+  if (!cfg) throw new Error("SMTP is not configured");
+  await getTransporter(cfg).verify();
+}
+
+/**
  * Send a single email. Throws if SMTP is not configured or the send fails —
  * callers that treat mail as best-effort should wrap this in try/catch.
  */

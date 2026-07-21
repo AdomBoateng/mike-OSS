@@ -13,6 +13,8 @@ import { userRouter } from "./routes/user";
 import { downloadsRouter } from "./routes/downloads";
 import { caseLawRouter } from "./routes/caseLaw";
 import { authRouter } from "./routes/auth";
+import { requireAuth } from "./middleware/auth";
+import { smtpEnabled, verifySmtp, resolveSmtpConfig } from "./lib/mailer";
 
 // Safety net: Express 4 does not catch rejections thrown inside async route
 // handlers, and Node crashes on an unhandled rejection. Log and keep the server
@@ -194,6 +196,37 @@ app.use("/case-law", caseLawRouter);
 app.use("/auth", authRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// SMTP self-test: confirms config + connectivity + auth (transporter.verify())
+// WITHOUT sending mail. Auth-required so it isn't an open network probe.
+app.get("/health/smtp", requireAuth, async (_req, res) => {
+  if (!smtpEnabled()) {
+    return void res.status(503).json({
+      ok: false,
+      detail:
+        "SMTP is not configured (SMTP_HOST and SMTP_FROM are required).",
+    });
+  }
+  const cfg = resolveSmtpConfig()!;
+  try {
+    await verifySmtp();
+    res.json({
+      ok: true,
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.secure,
+      from: cfg.from,
+      auth: !!cfg.user,
+    });
+  } catch (err) {
+    res.status(502).json({
+      ok: false,
+      host: cfg.host,
+      port: cfg.port,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Mike backend running on port ${PORT}`);
