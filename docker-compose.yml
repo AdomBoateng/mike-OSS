@@ -59,6 +59,13 @@ services:
       # Clear any host (e.g. Windows) soffice path from .env; the image ships
       # LibreOffice and convert.ts auto-discovers /usr/bin/soffice.
       SOFFICE_BINARY_PATH: ""
+    # The internal SMTP host isn't in the server's DNS (only resolution was
+    # missing; routing to it works), so map the hostname to its IP. Keep the
+    # HOSTNAME (don't put the IP in SMTP_HOST) so the TLS cert still validates
+    # on port 465. Override the IP with MAIL_HOST_IP if it ever changes; remove
+    # this block if the server's DNS is fixed to resolve the mail host.
+    extra_hosts:
+      - "mail.quantumgroupgh.com:${MAIL_HOST_IP:-10.18.200.20}"
     ports:
       - "3001:3001"
     depends_on:
