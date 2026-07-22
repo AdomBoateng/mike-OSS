@@ -113,9 +113,11 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
         return profile.displayName || user?.email?.split("@")[0] || "";
     };
 
-    const getUserTier = () => {
+    // Show the LDAP-managed organisation (read-only) under the display name,
+    // in place of the account tier.
+    const getOrganisation = () => {
         if (!profile) return "";
-        return profile.tier || "Free";
+        return profile.organisation || "";
     };
 
     if (!user) return null;
@@ -419,7 +421,7 @@ export function AppSidebar({ isOpen, onToggle }: AppSidebarProps) {
                                             {getDisplayName()}
                                         </div>
                                         <div className="text-[12px] text-gray-500 leading-none">
-                                            {getUserTier()}
+                                            {getOrganisation()}
                                         </div>
                                     </div>
                                     <ChevronsUpDown className="h-4 w-4 flex-shrink-0 text-gray-400" />

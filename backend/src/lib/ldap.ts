@@ -23,7 +23,8 @@ export interface LdapConfig {
   userBaseDn: string;
   usernameAttribute: string;
   mailAttribute: string;
-  orgAttribute: string;
+  /** Attributes to source the organisation from, in priority order (e.g. o, ou). */
+  orgAttributes: string[];
   timeoutMs: number;
 }
 
@@ -53,7 +54,11 @@ export function resolveLdapConfig(): LdapConfig | null {
     userBaseDn,
     usernameAttribute: env("LDAP_USERNAME_ATTRIBUTE") ?? "uid",
     mailAttribute: env("LDAP_MAIL_ATTRIBUTE") ?? "mail",
-    orgAttribute: env("LDAP_ORG_ATTRIBUTE") ?? "o",
+    // Comma-separated; first populated attribute wins. Defaults to o then ou.
+    orgAttributes: (env("LDAP_ORG_ATTRIBUTE") ?? "o,ou")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     timeoutMs: Number(env("LDAP_OPERATION_TIMEOUT_MS") ?? "10000"),
   };
 }
@@ -115,7 +120,7 @@ export async function ldapAuthenticate(
       attributes: [
         cfg.usernameAttribute,
         cfg.mailAttribute,
-        cfg.orgAttribute,
+        ...cfg.orgAttributes,
         "givenName",
         "sn",
         "cn",
@@ -157,7 +162,11 @@ function mapEntryToUser(
   const sn = firstString(entry.sn);
   const displayName =
     [given, sn].filter(Boolean).join(" ").trim() || firstString(entry.cn);
-  const organisation = firstString(entry[cfg.orgAttribute]);
+  // First populated org attribute wins (e.g. o, then ou).
+  const organisation =
+    cfg.orgAttributes
+      .map((attr) => firstString(entry[attr]))
+      .find((v): v is string => !!v && v.trim().length > 0) ?? null;
   return {
     ldapUid,
     email: firstString(entry[cfg.mailAttribute]),
@@ -191,7 +200,7 @@ export async function ldapFindByEmail(
       attributes: [
         cfg.usernameAttribute,
         cfg.mailAttribute,
-        cfg.orgAttribute,
+        ...cfg.orgAttributes,
         "givenName",
         "sn",
         "cn",
