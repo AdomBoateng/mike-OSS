@@ -1,0 +1,54 @@
+# Production overlay. Apply it on top of the base file — it does not replace it:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What it changes versus the LAN-friendly defaults in docker-compose.yml:
+#   - CORS locked to APP_PUBLIC_URL instead of reflecting every origin
+#   - NODE_ENV=production everywhere, which also arms the startup config check
+#     (backend/src/lib/config.ts) so a missing secret stops the deploy
+#   - the Postgres debugging port is no longer published to the host
+#   - the database password comes from the environment, not the file
+#   - restart policy and log rotation suited to an unattended box
+#
+# Required on the host before running (see docs/DEPLOYMENT.md):
+#   export POSTGRES_PASSWORD=...        # a real password, not mike_local_dev
+#   export APP_PUBLIC_URL=https://mike.example.com
+# and a backend/.env with freshly generated secrets.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}
+    # Drop the host port mapping from the base file: nothing outside the compose
+    # network needs Postgres. Reach it with `docker compose exec postgres psql`.
+    ports: !override []
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  backend:
+    environment:
+      DATABASE_URL: postgres://mike:${POSTGRES_PASSWORD:?}@postgres:5432/mike
+      # Exact origin(s) allowed to call the API, comma-separated. Never "*" here.
+      FRONTEND_URL: ${APP_PUBLIC_URL:?set APP_PUBLIC_URL in the environment}
+      # Where emails and other absolute links should point.
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:?}
+      PORT: "3001"
+      NODE_ENV: production
+      SOFFICE_BINARY_PATH: ""
+      # Number of proxy hops in front of the app. Rate limiting keys on the
+      # client IP, so this must match the reverse proxy chain or one visitor's
+      # limit applies to everyone (too low) / anyone can spoof theirs (too high).
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  frontend:
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NODE_ENV: production
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }

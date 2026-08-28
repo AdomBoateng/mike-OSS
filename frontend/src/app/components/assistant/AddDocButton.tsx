@@ -8,41 +8,37 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { uploadStandaloneDocument } from "@/app/lib/mikeApi";
-import type { Document } from "../shared/types";
+import { SUPPORTED_DOCUMENT_ACCEPT } from "@/app/lib/documentUploadValidation";
 
 interface Props {
-    onSelectDoc: (doc: Document) => void;
+    /**
+     * Hand the chosen files to the caller. Uploading is owned by the caller
+     * (ChatInput) so progress stays visible after this menu closes.
+     */
+    onFilesSelected: (files: File[]) => void;
     onBrowseAll: () => void;
     selectedDocIds?: string[];
     hideLabel?: boolean;
+    /** Whether any upload started from here is still in flight. */
+    uploading?: boolean;
 }
 
 export function AddDocButton({
-    onSelectDoc,
+    onFilesSelected,
     onBrowseAll,
     selectedDocIds = [],
     hideLabel = false,
+    uploading = false,
 }: Props) {
     const [isOpen, setIsOpen] = useState(false);
-    const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = Array.from(e.target.files || []);
+        // Reset first so re-picking the same file fires `change` again.
+        if (fileInputRef.current) fileInputRef.current.value = "";
         if (!files.length) return;
-        setUploading(true);
-        try {
-            const uploaded = await Promise.all(
-                files.map((f) => uploadStandaloneDocument(f)),
-            );
-            uploaded.forEach((doc) => onSelectDoc(doc));
-        } catch (err) {
-            console.error("Upload failed:", err);
-        } finally {
-            setUploading(false);
-            if (fileInputRef.current) fileInputRef.current.value = "";
-        }
+        onFilesSelected(files);
     };
 
     return (
@@ -50,10 +46,10 @@ export function AddDocButton({
             <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.docx,.doc"
+                accept={SUPPORTED_DOCUMENT_ACCEPT}
                 multiple
                 className="hidden"
-                onChange={handleUpload}
+                onChange={handleChange}
             />
             <DropdownMenu onOpenChange={setIsOpen}>
                 <DropdownMenuTrigger asChild>
@@ -66,7 +62,9 @@ export function AddDocButton({
                         title="Add documents"
                         aria-label="Add documents"
                     >
-                        {selectedDocIds.length > 0 ? (
+                        {uploading ? (
+                            <Loader2Icon className="h-4 w-4 shrink-0 animate-spin" />
+                        ) : selectedDocIds.length > 0 ? (
                             <span className="font-medium tabular-nums">{selectedDocIds.length}</span>
                         ) : (
                             <PlusIcon
@@ -87,20 +85,13 @@ export function AddDocButton({
                 >
                     <DropdownMenuItem
                         className="cursor-pointer"
-                        disabled={uploading}
                         onSelect={(e) => {
                             e.preventDefault();
                             fileInputRef.current?.click();
                         }}
                     >
-                        {uploading ? (
-                            <Loader2Icon className="h-4 w-4 mr-2 animate-spin text-gray-400" />
-                        ) : (
-                            <Upload className="h-4 w-4 mr-2 text-gray-500" />
-                        )}
-                        <span className="text-sm">
-                            {uploading ? "Uploading…" : "Upload files"}
-                        </span>
+                        <Upload className="h-4 w-4 mr-2 text-gray-500" />
+                        <span className="text-sm">Upload files</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem
                         className="cursor-pointer"

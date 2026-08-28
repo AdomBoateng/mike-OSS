@@ -71,6 +71,25 @@ export function customModelName(model: string): string {
         : model;
 }
 
+/**
+ * Human-readable names for the models our endpoint serves.
+ *
+ * The endpoint advertises machine ids (`qwen3_6_35b`); those ids are what gets
+ * sent back to it and must never be rewritten. This map only affects the label
+ * shown in the picker. Keys are matched case-insensitively; an id with no entry
+ * falls back to its raw name, so a newly deployed model still appears (just
+ * unprettified) instead of vanishing from the list.
+ */
+const CUSTOM_MODEL_LABELS: Record<string, string> = {
+    qwen3_6_35b: "Qwen3.6-35b",
+    qwen3_8_27b: "Qwen3.8-27b",
+};
+
+/** Display label for a raw endpoint model name. */
+export function customModelLabel(rawName: string): string {
+    return CUSTOM_MODEL_LABELS[rawName.toLowerCase()] ?? rawName;
+}
+
 // ---------------------------------------------------------------------------
 // Provider inference
 // ---------------------------------------------------------------------------

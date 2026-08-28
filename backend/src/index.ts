@@ -15,6 +15,7 @@ import { caseLawRouter } from "./routes/caseLaw";
 import { authRouter } from "./routes/auth";
 import { requireAuth } from "./middleware/auth";
 import { smtpEnabled, verifySmtp, resolveSmtpConfig } from "./lib/mailer";
+import { assertConfig } from "./lib/config";
 
 // Safety net: Express 4 does not catch rejections thrown inside async route
 // handlers, and Node crashes on an unhandled rejection. Log and keep the server
@@ -30,6 +31,11 @@ process.on("uncaughtException", (err) => {
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 const isProduction = process.env.NODE_ENV === "production";
+
+// Validate the environment before binding a port: in production a missing
+// secret or unreachable-by-config dependency stops the process here rather than
+// surfacing as a 500 on someone's first sign-in.
+assertConfig();
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];

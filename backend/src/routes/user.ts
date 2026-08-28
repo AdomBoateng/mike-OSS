@@ -11,6 +11,7 @@ import {
     resolveModel,
     listCustomModels,
     toCustomModelId,
+    customModelLabel,
 } from "../lib/llm";
 import {
     type ApiKeySource,
@@ -812,7 +813,7 @@ userRouter.get("/custom-models", requireAuth, async (_req, res) => {
             source,
             models: models.map((m) => ({
                 id: toCustomModelId(m.id),
-                label: m.name,
+                label: customModelLabel(m.name),
             })),
         });
     } catch (err) {

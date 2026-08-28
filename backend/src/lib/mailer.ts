@@ -26,6 +26,17 @@ export interface MailMessage {
   subject: string;
   html: string;
   text: string;
+  /**
+   * Inline (Content-ID) attachments referenced from `html` as `cid:<cid>` —
+   * used for the branded logo. See lib/email/layout.ts.
+   */
+  attachments?: {
+    filename: string;
+    content: string;
+    encoding: "base64";
+    cid: string;
+    contentDisposition: "inline";
+  }[];
 }
 
 function env(name: string): string | undefined {
@@ -93,5 +104,6 @@ export async function sendMail(msg: MailMessage): Promise<void> {
     subject: msg.subject,
     text: msg.text,
     html: msg.html,
+    attachments: msg.attachments,
   });
 }

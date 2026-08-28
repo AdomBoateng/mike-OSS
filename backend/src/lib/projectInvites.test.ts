@@ -160,13 +160,18 @@ describe("notifyNewCollaborators resilience", () => {
 
 describe("email templates", () => {
   let savedFrontend: string | undefined;
+  let savedPublic: string | undefined;
   beforeEach(() => {
     savedFrontend = process.env.FRONTEND_URL;
+    savedPublic = process.env.APP_PUBLIC_URL;
+    delete process.env.APP_PUBLIC_URL;
     process.env.FRONTEND_URL = "https://mike.example.com/";
   });
   afterEach(() => {
     if (savedFrontend === undefined) delete process.env.FRONTEND_URL;
     else process.env.FRONTEND_URL = savedFrontend;
+    if (savedPublic === undefined) delete process.env.APP_PUBLIC_URL;
+    else process.env.APP_PUBLIC_URL = savedPublic;
   });
 
   test("invitation points at the app root and mentions LDAP", () => {
@@ -188,5 +193,60 @@ describe("email templates", () => {
     });
     assert.ok(!tpl.html.includes("<script>"));
     assert.match(tpl.html, /&lt;script&gt;/);
+  });
+
+  test("inviter label is escaped too", () => {
+    const tpl = addedNoticeEmail({
+      ...baseOpts,
+      inviterLabel: '<img src=x onerror="alert(1)">',
+    });
+    assert.ok(!tpl.html.includes("<img src=x"));
+    assert.match(tpl.html, /&lt;img src=x/);
+  });
+
+  test("APP_PUBLIC_URL wins over the FRONTEND_URL allowlist", () => {
+    process.env.APP_PUBLIC_URL = "https://mike.quantumgroupgh.com/";
+    const tpl = addedNoticeEmail(baseOpts);
+    assert.match(
+      tpl.text,
+      /https:\/\/mike\.quantumgroupgh\.com\/projects\/proj-1/,
+    );
+  });
+
+  test("a wildcard FRONTEND_URL never becomes the link", () => {
+    // docker-compose sets FRONTEND_URL="*" to reflect any CORS origin; that must
+    // not leak into an email as a literal "*" href.
+    process.env.FRONTEND_URL = "*";
+    const tpl = invitationEmail(baseOpts);
+    assert.ok(!tpl.text.includes("*"));
+    assert.ok(!tpl.html.includes('href="*"'));
+    assert.match(tpl.text, /http:\/\/localhost:3000/);
+  });
+
+  test("a comma-separated FRONTEND_URL uses its first real origin", () => {
+    process.env.FRONTEND_URL = "*,https://a.example.com,https://b.example.com";
+    const tpl = addedNoticeEmail(baseOpts);
+    assert.match(tpl.text, /https:\/\/a\.example\.com\/projects\/proj-1/);
+    assert.ok(!tpl.text.includes("b.example.com"));
+  });
+
+  test("both templates carry the inline logo the HTML references", () => {
+    for (const tpl of [invitationEmail(baseOpts), addedNoticeEmail(baseOpts)]) {
+      assert.equal(tpl.attachments.length, 1);
+      const logo = tpl.attachments[0];
+      assert.equal(logo.contentDisposition, "inline");
+      assert.equal(logo.encoding, "base64");
+      assert.match(tpl.html, new RegExp(`src="cid:${logo.cid}"`));
+      // Guard against an empty/truncated inlined asset.
+      assert.ok(logo.content.length > 1000);
+    }
+  });
+
+  test("every email has preview text and a plain-text alternative", () => {
+    for (const tpl of [invitationEmail(baseOpts), addedNoticeEmail(baseOpts)]) {
+      assert.ok(tpl.text.trim().length > 0);
+      assert.match(tpl.html, /<!DOCTYPE html/i);
+      assert.match(tpl.html, /Acme Merger/);
+    }
   });
 });
