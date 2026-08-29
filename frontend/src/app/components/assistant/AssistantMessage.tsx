@@ -348,16 +348,25 @@ function ResponseStatus({ status }: { status: StatusState }) {
     const isError = status === "error";
 
     useEffect(() => {
-        if (wasActiveRef.current && !isActive) {
+        // Read and advance the previous-state ref up front. The "just finished"
+        // branch returns a cleanup, so advancing it at the end of the body
+        // skipped exactly the transition that matters: the ref stayed true, the
+        // reset branch below became unreachable, and a follow-up sent within the
+        // 1.5s window had its fade cancelled by the cleanup with nothing left to
+        // clear it — leaving the done tick lit through the next response.
+        const wasActive = wasActiveRef.current;
+        wasActiveRef.current = isActive;
+
+        if (wasActive && !isActive) {
             setShowDone(true);
             setDoneVisible(true);
             const t = setTimeout(() => setDoneVisible(false), 1500);
             return () => clearTimeout(t);
-        } else if (!wasActiveRef.current && isActive) {
+        }
+        if (!wasActive && isActive) {
             setShowDone(false);
             setDoneVisible(false);
         }
-        wasActiveRef.current = isActive;
     }, [isActive]);
 
     return (

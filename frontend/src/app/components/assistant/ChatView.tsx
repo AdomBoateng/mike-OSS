@@ -475,18 +475,38 @@ export function ChatView({
         return () => observer.disconnect();
     }, []);
 
+    // Reserve a screenful under the latest question so the answer starts at the
+    // top of the viewport. The measured element both changes (a new user message)
+    // and reflows in place (text rewrapping, attachment chips going to a second
+    // line, a window resize crossing the mobile breakpoint), so observe it rather
+    // than measuring once per message — the previous version keyed on a ref in
+    // its dependency array, which never re-runs on a resize, so the reserved
+    // space went stale. Safe against ResizeObserver feedback: minHeight is
+    // applied to the last *assistant* message, not the user message observed here.
     useEffect(() => {
-        if (latestUserMessageRef.current) {
-            const headerHeight = window.innerWidth < 768 ? 56 : 0;
-            const gap = window.innerWidth < 768 ? 16 : 24;
+        const el = latestUserMessageRef.current;
+        if (!el) return;
+
+        const measure = () => {
+            const isMobile = window.innerWidth < 768;
+            const headerHeight = isMobile ? 56 : 0;
+            const gap = isMobile ? 16 : 24;
             const paddingBottom = 128;
             const marginBottom = 48;
-            const userMessageHeight = latestUserMessageRef.current.offsetHeight;
             setMinHeight(
-                `calc(100dvh - ${headerHeight + gap + userMessageHeight + paddingBottom + marginBottom}px)`,
+                `calc(100dvh - ${headerHeight + gap + el.offsetHeight + paddingBottom + marginBottom}px)`,
             );
-        }
-    }, [messages.length, latestUserMessageRef.current]); // eslint-disable-line react-hooks/exhaustive-deps
+        };
+
+        measure();
+        const observer = new ResizeObserver(measure);
+        observer.observe(el);
+        window.addEventListener("resize", measure);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener("resize", measure);
+        };
+    }, [messages.length]);
 
     const updateScrollButton = useCallback(() => {
         const c = messagesContainerRef.current;
