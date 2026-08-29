@@ -1,162 +1,164 @@
-# Mike
+# Mike — self-hosted
 
-Mike is a legal document assistant with a Next.js frontend, an Express backend, Supabase Auth/Postgres, and Cloudflare R2-compatible object storage.
+Mike is a legal document assistant: a Next.js frontend, an Express + TypeScript backend,
+and an assistant that reads, drafts, and edits DOCX/PDF documents with real Word tracked
+changes.
 
-Website: [mikeoss.com](https://mikeoss.com)
+**This is a self-hosting fork.** Upstream Mike ([mikeoss.com](https://mikeoss.com)) runs on
+managed services; this checkout replaces every one of them with infrastructure you operate:
+
+| Upstream | Here |
+| --- | --- |
+| Supabase Auth | LDAP bind (FreeIPA) + our own HS256 JWT session |
+| Supabase Postgres / PostgREST | self-hosted Postgres, via a query-builder shim over `pg` |
+| Cloudflare R2 | any S3-compatible endpoint |
+| Supabase-hosted email | your own SMTP server |
+| Anthropic / Gemini / OpenAI | a self-hosted OpenAI-compatible endpoint (vLLM) |
+
+There is **no signup** — accounts come from the directory. If you want the managed-service
+version, use upstream rather than this fork.
 
 ## Contents
 
-- `frontend/` - Next.js application
-- `backend/` - Express API, Supabase access, document processing, and database schema
-- `backend/schema.sql` - Supabase schema for fresh databases
-- `backend/migrations/` - dated, incremental schema migrations; on an existing database, apply the files dated after the Mike version you deployed
+- `frontend/` — Next.js application
+- `backend/` — Express API, document processing, and the database schema
+- `backend/schema.sql` — full schema for a fresh database
+- `backend/migrations/` — dated incremental migrations for an existing database
+- `docs/DEPLOYMENT.md` — Docker deployment and the production checklist
+- `docs/self-hosting-roadmap.md` — what was migrated off the managed services, and what's left
+- `docs/adding-api-sources.md` — how to add another external API as assistant tools
 
 ## Prerequisites
 
-- Node.js 20 or newer
-- npm
-- git
-- A Supabase project
-- A Cloudflare R2 bucket, MinIO bucket, or another S3-compatible bucket
-- At least one supported model provider: Anthropic, Google Gemini, OpenAI, or a custom OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, …)
-- Optional: a CourtListener API token for case law lookup and citation verification
-- LibreOffice installed locally if you need DOC/DOCX to PDF conversion
+- Node.js 20 or newer, npm, git
+- Docker + Compose (the supported way to run the stack)
+- An LDAP directory the server can reach (developed against FreeIPA)
+- An S3-compatible bucket (self-hosted MinIO/Ceph, AWS S3, or R2)
+- An OpenAI-compatible model endpoint — vLLM, Ollama, LM Studio, TGI
+- LibreOffice, for DOC/DOCX → PDF conversion (bundled in the backend image; install
+  locally for `npm run dev`)
+- Optional: an SMTP server for collaborator invitations
+- Optional: a CourtListener API token for US case-law lookup
 
-## Database Setup
+## Configure
 
-For a new Supabase database, open the Supabase SQL editor and run:
-
-```sql
--- copy and run the contents of:
--- backend/schema.sql
-```
-
-The schema file is for fresh deployments and already includes the latest database shape.
-
-For an existing database, do not run the full schema file over production data. Instead, apply the incremental files in `backend/migrations/`: run the migrations dated **after** the version of Mike you currently have deployed, in filename order. Each file is named `YYYYMMDD_<name>.sql` (the date is also recorded in a comment at the top of the file) and is written to be safe to re-run, so when unsure you can re-apply the most recent migrations without harm.
-
-## Environment
-
-Create local env files:
+Everything is driven by one file:
 
 ```bash
-touch backend/.env
-touch frontend/.env.local
+cp backend/.env.example backend/.env
+$EDITOR backend/.env
 ```
 
-Create `backend/.env`:
+`backend/.env.example` is the reference — it documents every variable, which are required,
+and which only disable a feature when absent. The essentials:
+
+- **Three secrets**, each a different random value (`openssl rand -hex 32`):
+  `SESSION_JWT_SECRET`, `DOWNLOAD_SIGNING_SECRET`, `USER_API_KEYS_ENCRYPTION_SECRET`
+- **`DATABASE_URL`** — overridden by compose for the container network
+- **`LDAP_*`** — directory URL, a service bind account, and the user base DN
+- **`S3_*`** — endpoint, credentials, bucket (legacy `R2_*` names still work)
+- **`CUSTOM_LLM_BASE_URL`** / **`CUSTOM_LLM_API_KEY`** — your model endpoint
+- **`APP_PUBLIC_URL`** — the address users browse to, used for links in email
+- **`SMTP_*`** — optional; without it, sharing still works but sends no invitation
+
+With `NODE_ENV=production` the backend validates all of this at startup and **exits** if
+something required is missing, still holds a placeholder, or reuses another secret's value.
+Outside production the same problems are printed as warnings, so a partial local setup runs.
+
+The frontend needs no env file. It derives the API URL from the page host at runtime, so one
+build serves any server address; set `NEXT_PUBLIC_API_BASE_URL` only to pin a fixed backend.
+
+## Run
 
 ```bash
-PORT=3001
-FRONTEND_URL=http://localhost:3000
-DOWNLOAD_SIGNING_SECRET=replace-with-a-random-32-byte-hex-string
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SECRET_KEY=your-supabase-service-role-key
-
-R2_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
-R2_ACCESS_KEY_ID=your-r2-access-key
-R2_SECRET_ACCESS_KEY=your-r2-secret-key
-R2_BUCKET_NAME=mike
-
-GEMINI_API_KEY=your-gemini-key
-ANTHROPIC_API_KEY=your-anthropic-key
-OPENAI_API_KEY=your-openai-key
-RESEND_API_KEY=your-resend-key
-
-# Optional: a custom OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, …).
-# CUSTOM_LLM_BASE_URL is the OpenAI-compatible root; its models are fetched from
-# {CUSTOM_LLM_BASE_URL}/models. CUSTOM_LLM_API_KEY is optional (local servers
-# such as Ollama don't require one). Both act as instance-wide fallbacks that a
-# user can override per-account under Account > Models & API Keys.
-CUSTOM_LLM_BASE_URL=http://localhost:11434/v1
-CUSTOM_LLM_API_KEY=
-USER_API_KEYS_ENCRYPTION_SECRET=your-long-random-secret
-
-# Optional: enables CourtListener case law and citation tools.
-COURTLISTENER_API_TOKEN=your-courtlistener-token
-
-# Optional: use locally imported CourtListener bulk data for faster case reads.
-COURTLISTENER_BULK_DATA_ENABLED=false
+docker compose up -d --build
 ```
 
-Create `frontend/.env.local`:
+Open `http://<server-ip>:3000` and sign in with directory credentials. **Both 3000 and 3001
+must be reachable from client machines** — the browser calls the API directly.
+
+On first start, an empty Postgres volume loads `backend/db/initdb/00-auth-shim.sql` (which
+recreates the `auth.users` table and roles the Supabase-era schema expects) and then
+`backend/schema.sql`, unmodified. For an existing database, don't run the schema file — apply
+the dated files in `backend/migrations/` in filename order instead.
+
+For production, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): it adds a compose overlay that
+locks CORS, unpublishes the Postgres port, and takes the DB password from the environment,
+plus a pre-flight checklist covering TLS, backups, and secret rotation.
+
+## Develop
 
 ```bash
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=your-supabase-anon-key
-NEXT_PUBLIC_API_BASE_URL=http://localhost:3001
+npm install --prefix backend && npm install --prefix frontend
+
+npm run dev   --prefix backend     # port 3001
+npm run dev   --prefix frontend    # port 3000
 ```
 
-Supabase values come from the project dashboard. Use the project URL for `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`, the service role key for the backend `SUPABASE_SECRET_KEY`, and the anon/public key for `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY`. If your Supabase project shows multiple key formats, use the legacy JWT-style anon and service role keys expected by the Supabase client libraries.
-
-Provider keys are only needed for the models, legal research, and email features you plan to use. Model provider keys and the CourtListener token can be configured in `backend/.env` for the whole instance, or per user in **Account > Models & API Keys**. If a provider key is present in `backend/.env`, that provider is available by default and the matching browser API key field is read-only.
-
-To use a custom OpenAI-compatible endpoint, set a base URL (env `CUSTOM_LLM_BASE_URL` or per user in **Account > Models & API Keys**). Mike fetches the available models from `{base URL}/models` and lists them under a **Custom** group in the model picker — no model names are hardcoded for this provider. Unlike the cloud providers, the per-user base URL overrides the env value rather than being locked, so an instance-wide default can still be tailored per account. An API key is optional (local servers such as Ollama don't need one).
-
-## CourtListener Integration
-
-Mike can use CourtListener for US case law citation verification, case fetching, targeted opinion search, and case-law panels in assistant responses.
-
-To enable live CourtListener access, set `COURTLISTENER_API_TOKEN` in `backend/.env` and restart the backend. Users can also add their own CourtListener token from **Account > Models & API Keys** when the instance does not provide one globally.
-
-Fresh databases created from `backend/schema.sql` already include the CourtListener support tables. Existing deployments should apply the matching dated migration in `backend/migrations/` before enabling the feature.
-
-Bulk data is optional. When `COURTLISTENER_BULK_DATA_ENABLED=true`, Mike first tries local Supabase/R2 data before falling back to CourtListener's API:
-
-- citation metadata is read from `public.courtlistener_citation_index`
-- case cluster metadata is read from `public.courtlistener_opinion_cluster_index`
-- cached opinion JSON is read from the R2 prefix `courtlistener/opinions/by-cluster/{clusterId}/{opinionId}.json`
-
-If you do not import bulk data, leave `COURTLISTENER_BULK_DATA_ENABLED=false`; live CourtListener tools still work with a valid token, subject to CourtListener rate limits.
-
-## Install
-
-Install each app package:
+Postgres still has to be running — `docker compose up -d postgres` gives you one on host
+port 5433, matching the `DATABASE_URL` in `.env.example`.
 
 ```bash
-npm install --prefix backend
-npm install --prefix frontend
+npm run build --prefix backend     # tsc -> backend/dist
+npm run build --prefix frontend    # next build
+npm run lint  --prefix frontend
 ```
 
-## Run Locally
-
-Start the backend:
+Tests use the Node built-in runner via `tsx`:
 
 ```bash
-npm run dev --prefix backend
+npm test --prefix backend                 # unit tests, always safe to run
+npm run test:integration --prefix backend # hits a real DB / S3 / LDAP
 ```
 
-Start the main app:
+Integration tests load `.env` and skip themselves when the relevant variable is absent, so
+they're safe to run anywhere. A single file:
 
 ```bash
-npm run dev --prefix frontend
+node --import tsx --test backend/src/lib/storage.test.ts
 ```
 
-Open `http://localhost:3000`.
+## Models
 
-## First Run
+Models come from `{CUSTOM_LLM_BASE_URL}/models` — nothing is hardcoded, so whatever your
+endpoint serves is what the picker offers. Ids are namespaced `custom/<id>` internally and
+the prefix is stripped before the endpoint is called.
 
-1. Sign up in the app.
-2. If you did not set provider keys in `backend/.env`, open **Account > Models & API Keys** and add an Anthropic, Gemini, or OpenAI API key.
-3. To use legal research tools, add a CourtListener token in `backend/.env` or **Account > Models & API Keys**.
-4. Create or open a project and start chatting with documents.
+Display names for known ids are mapped in `backend/src/lib/llm/models.ts`; an unmapped model
+still appears, labelled with its raw id. A base URL and key can also be set per account under
+**Account > Models & API Keys**, which overrides the instance-wide value.
+
+## CourtListener (optional)
+
+Mike can verify citations, fetch cases, and search opinions through CourtListener. Set
+`COURTLISTENER_API_TOKEN` in `backend/.env` and restart, or let users add their own token
+under **Account > Models & API Keys**. Fresh databases already include the supporting tables.
+
+Bulk data is optional. With `COURTLISTENER_BULK_DATA_ENABLED=true`, Mike reads locally
+imported citation and cluster tables plus cached opinion JSON in object storage before
+falling back to the live API. Leave it `false` if you haven't imported anything.
 
 ## Troubleshooting
 
-**Sign-up confirmation email never arrives.** Confirmation emails are sent by Supabase Auth, not by Mike. For local development, the simplest fix is to disable email confirmation in **Supabase > Authentication > Providers > Email**. For production, configure custom SMTP in Supabase; the built-in mailer is heavily rate-limited and may be restricted on newer projects.
+**The backend container restart-loops.** Read its logs first: with `NODE_ENV=production` the
+startup check prints `[config] ERROR` lines naming exactly which variable is missing or
+invalid before it exits.
 
-**The model picker shows a missing-key warning.** Add a key for that provider in **Account > Models & API Keys**, or configure the provider key in `backend/.env` and restart the backend.
+**Nobody can sign in.** The backend must be able to reach the LDAP host, and the service bind
+account must be able to search `LDAP_USER_BASE_DN`. `npm run test:integration --prefix backend`
+exercises the bind and search directly.
 
-**CourtListener tools say the API token is missing.** Set `COURTLISTENER_API_TOKEN` in `backend/.env`, or add a CourtListener token in **Account > Models & API Keys** for the signed-in user. Restart the backend after changing `.env`.
+**The model picker is empty.** The backend can't reach `CUSTOM_LLM_BASE_URL`. From inside the
+container, since `localhost` there is not your host:
+`docker compose exec backend node -e "fetch(process.env.CUSTOM_LLM_BASE_URL+'/models').then(r=>console.log(r.status))"`
 
-**CourtListener bulk lookup is not returning local results.** Confirm `COURTLISTENER_BULK_DATA_ENABLED=true`, the two CourtListener tables have been populated, and opinion JSON exists in R2 under `courtlistener/opinions/by-cluster/`. If bulk data is unavailable, Mike falls back to the live API when a token is configured.
+**Invitation emails never arrive.** Sign in, then call `GET /health/smtp` — it runs a real
+handshake and reports the failure without sending mail. If links in delivered mail look
+wrong, set `APP_PUBLIC_URL`; `FRONTEND_URL` is a CORS allowlist and can't serve as a link.
 
-**DOC or DOCX conversion fails.** Install LibreOffice locally and restart the backend so document conversion commands are available on the process path.
+**DOC or DOCX conversion fails.** The backend image ships LibreOffice. Running outside Docker,
+put `soffice` on `PATH` or set `SOFFICE_BINARY_PATH`.
 
-## Useful Checks
+## Licence
 
-```bash
-npm run build --prefix backend
-npm run build --prefix frontend
-npm run lint --prefix frontend
-```
+AGPL-3.0-only, as upstream. See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).

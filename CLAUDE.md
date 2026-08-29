@@ -10,7 +10,7 @@ browser never talks to Postgres or S3 directly; it goes through `backend` with a
 
 **This checkout is a self-hosting fork of upstream Mike.** Managed dependencies have been replaced:
 
-| Upstream (still described in `README.md`) | Here |
+| Upstream | Here |
 | --- | --- |
 | Supabase Auth | LDAP bind (FreeIPA) + our own HS256 JWT session |
 | Supabase Postgres / PostgREST | self-hosted Postgres via a query-builder shim over `pg` |
@@ -18,9 +18,10 @@ browser never talks to Postgres or S3 directly; it goes through `backend` with a
 | Supabase-hosted email | SMTP (`nodemailer`) |
 | Anthropic/Gemini/OpenAI model pickers | custom OpenAI-compatible endpoint models only |
 
-`README.md` and `docs/safe-local-testing.md` are largely upstream text and are **stale** on all of the
-above — trust `backend/.env.example`, `docker-compose.yml`, `docs/DEPLOYMENT.md`, and
-`docs/self-hosting-roadmap.md` (which tracks migration status) instead.
+`README.md`, `docs/DEPLOYMENT.md`, and `docs/self-hosting-roadmap.md` describe this fork and are
+current. **`docs/safe-local-testing.md` is still upstream text and is stale** — it tells you to
+create a Supabase project and set `NEXT_PUBLIC_SUPABASE_*`. `backend/.env.example` is the
+authoritative reference for configuration.
 
 ## Commands
 
