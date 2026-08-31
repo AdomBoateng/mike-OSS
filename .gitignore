@@ -17,3 +17,6 @@ next-env.d.ts
 .DS_Store
 .vercel
 coverage
+
+# Local operational notes holding directory credentials — never commit.
+LDAP Authentication Backend for Guacamole.txt
