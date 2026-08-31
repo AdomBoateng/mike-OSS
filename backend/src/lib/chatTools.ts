@@ -28,7 +28,11 @@ import {
   type CaseCitationEvent,
   type CourtlistenerToolEvent,
 } from "./legalSourcesTools/courtlistenerTools";
-import { defaultToolSources, buildToolSourceContext } from "./toolSources";
+import {
+  defaultToolSources,
+  buildToolSourceContext,
+  type ToolSourceFlags,
+} from "./toolSources";
 import { availableProvidersFrom } from "./userApiKeys";
 import {
   buildUserMcpTools,
@@ -43,6 +47,17 @@ import {
   type OpenAIToolSchema,
 } from "./llm";
 import { safeErrorMessage } from "./safeError";
+import {
+  searchLegislation,
+  fetchLegislationText,
+  findInLegislationText,
+  findAmendments,
+} from "./ghanaLaw";
+import {
+  GHANA_LAW_TOOL_NAMES,
+  GHANA_READ_CHUNK_CHARS,
+  type GhanaLawToolEvent,
+} from "./legalSourcesTools/ghanaLawTools";
 import { extractPdfText } from "./pdfText";
 
 // Re-exported for existing callers; the implementation now lives in ./pdfText
@@ -162,17 +177,20 @@ GENERAL GUIDANCE:
 `;
 
 /**
- * Assemble the chat system prompt. When `includeResearchTools` is true the
- * CourtListener (US case-law) research instructions are spliced in; when
- * false they are omitted entirely so the model is not told about tools it
- * does not have. Gated per-user by the Legal Research > US feature toggle.
+ * Assemble the chat system prompt. Each enabled research source splices in its
+ * own instructions; a disabled source contributes nothing, so the model is
+ * never told about tools it does not have. Gated per-user by the Legal Research
+ * toggles (US -> CourtListener, Ghana -> Parliament legislation).
  */
-export function buildSystemPrompt(includeResearchTools = true): string {
-  const research = includeResearchTools
-    ? defaultToolSources.systemPrompt(
-        buildToolSourceContext(includeResearchTools),
-      )
-    : "";
+export function buildSystemPrompt(
+  flags: boolean | ToolSourceFlags = true,
+): string {
+  // Ask the registry for whatever is enabled rather than gating the whole
+  // research block on the US flag: with more than one jurisdiction, turning US
+  // research off must not also silence Ghana.
+  const research = defaultToolSources.systemPrompt(
+    buildToolSourceContext(flags),
+  );
   return research
     ? `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${research}\n${SYSTEM_PROMPT_AFTER_RESEARCH}`
     : `${SYSTEM_PROMPT_BEFORE_RESEARCH}\n\n${SYSTEM_PROMPT_AFTER_RESEARCH}`;
@@ -2253,6 +2271,27 @@ function cachedCaseNotFetchedResult(clusterId: number | null) {
   };
 }
 
+/**
+ * Wording handed back to the model when an item has no readable text. A scan
+ * must be described as unreadable, not as absent: an empty result invites the
+ * model to fall back on remembered text, which is the failure this whole source
+ * is built to avoid.
+ */
+function ghanaQualityNote(
+  quality: "text" | "scan" | "empty",
+  found: number,
+): string {
+  if (quality === "scan") {
+    return "This Act is in the repository only as a scanned image with no machine-readable text. Say so plainly. Do not supply the text from memory.";
+  }
+  if (quality === "empty") {
+    return "No readable document is attached to this item. Say so; do not supply the text from memory.";
+  }
+  return found === 0
+    ? "The Act was read successfully but the search term does not appear. Report that rather than inferring the provision."
+    : "Text is as enacted; amendments are separate Acts and are not included here.";
+}
+
 export async function runToolCalls(
   toolCalls: ToolCall[],
   docStore: DocStore,
@@ -2275,6 +2314,7 @@ export async function runToolCalls(
   workflowsApplied: { workflow_id: string; title: string }[];
   docsEdited: DocEditedResult[];
   courtlistenerEvents: CourtlistenerToolEvent[];
+  ghanaLawEvents: GhanaLawToolEvent[];
   caseCitationEvents: CaseCitationEvent[];
   mcpEvents: McpToolEvent[];
 }> {
@@ -2290,6 +2330,7 @@ export async function runToolCalls(
   const workflowsApplied: { workflow_id: string; title: string }[] = [];
   const docsEdited: DocEditedResult[] = [];
   const courtlistenerEvents: CourtlistenerToolEvent[] = [];
+  const ghanaLawEvents: GhanaLawToolEvent[] = [];
   const caseCitationEvents: CaseCitationEvent[] = [];
   const mcpEvents: McpToolEvent[] = [];
   const courtState: CourtlistenerTurnState =
@@ -3077,6 +3118,214 @@ export async function runToolCalls(
           }),
         });
       }
+    } else if (tc.function.name === GHANA_LAW_TOOL_NAMES.search) {
+      const query = typeof args.query === "string" ? args.query : "";
+      try {
+        const limit = typeof args.limit === "number" ? args.limit : undefined;
+        const results = await searchLegislation(query, { limit });
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_search",
+          query,
+          result_count: results.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            results: results.map((r) => ({
+              itemId: r.uuid,
+              title: r.title,
+              issued: r.issued,
+              collection: r.collection,
+              url: r.url,
+            })),
+            note:
+              results.length === 0
+                ? "No matching item in the Parliament of Ghana repository. This does not mean no such law exists - coverage of subsidiary legislation is thin."
+                : "Text is as enacted. Call ghana_law_find_amendments before relying on any of these.",
+          }),
+        });
+      } catch (err) {
+        const message = safeErrorMessage(err, "Ghana legislation search failed.");
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_search",
+          query,
+          result_count: 0,
+          error: message,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: message }),
+        });
+      }
+    } else if (tc.function.name === GHANA_LAW_TOOL_NAMES.findIn) {
+      const itemId = typeof args.itemId === "string" ? args.itemId : "";
+      const query = typeof args.query === "string" ? args.query : "";
+      try {
+        const doc = await fetchLegislationText(itemId);
+        if (!doc) {
+          throw new Error(`No repository item with id ${itemId}.`);
+        }
+        const matches =
+          doc.quality === "text"
+            ? findInLegislationText(doc.text, query, {
+                maxMatches:
+                  typeof args.maxMatches === "number"
+                    ? args.maxMatches
+                    : undefined,
+              })
+            : [];
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_find_in",
+          title: doc.item.title,
+          url: doc.item.url,
+          query,
+          match_count: matches.length,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title: doc.item.title,
+            url: doc.item.url,
+            quality: doc.quality,
+            matches,
+            note: ghanaQualityNote(doc.quality, matches.length),
+          }),
+        });
+      } catch (err) {
+        const message = safeErrorMessage(err, "Ghana legislation lookup failed.");
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_find_in",
+          title: itemId,
+          url: "",
+          query,
+          match_count: 0,
+          error: message,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: message }),
+        });
+      }
+    } else if (tc.function.name === GHANA_LAW_TOOL_NAMES.read) {
+      const itemId = typeof args.itemId === "string" ? args.itemId : "";
+      const offset =
+        typeof args.offset === "number" && args.offset > 0
+          ? Math.floor(args.offset)
+          : 0;
+      try {
+        const doc = await fetchLegislationText(itemId);
+        if (!doc) {
+          throw new Error(`No repository item with id ${itemId}.`);
+        }
+        const slice =
+          doc.quality === "text"
+            ? doc.text.slice(offset, offset + GHANA_READ_CHUNK_CHARS)
+            : "";
+        const nextOffset = offset + slice.length;
+        const truncated = doc.quality === "text" && nextOffset < doc.text.length;
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_read",
+          title: doc.item.title,
+          url: doc.item.url,
+          quality: doc.quality,
+          pages: doc.pages,
+          chars: doc.chars,
+          offset,
+          truncated,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            title: doc.item.title,
+            url: doc.item.url,
+            issued: doc.item.issued,
+            filename: doc.filename,
+            quality: doc.quality,
+            totalChars: doc.chars,
+            offset,
+            nextOffset: truncated ? nextOffset : null,
+            text: slice,
+            note: ghanaQualityNote(doc.quality, slice.length),
+          }),
+        });
+      } catch (err) {
+        const message = safeErrorMessage(err, "Ghana legislation read failed.");
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_read",
+          title: itemId,
+          url: "",
+          quality: "empty",
+          pages: 0,
+          chars: 0,
+          error: message,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: message }),
+        });
+      }
+    } else if (tc.function.name === GHANA_LAW_TOOL_NAMES.findAmendments) {
+      const actName = typeof args.actName === "string" ? args.actName : "";
+      try {
+        const amendments = await findAmendments(actName);
+        const list = amendments.map((a) => ({
+          title: a.title,
+          url: a.url,
+          issued: a.issued,
+        }));
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_find_amendments",
+          act_name: actName,
+          amendments: list,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({
+            actName,
+            amendments: list,
+            note:
+              list.length === 0
+                ? "The repository holds no amendment item for this Act. That is not evidence the Act is unamended - say so rather than asserting the text is current."
+                : "These amendments are NOT folded into the principal Act's text. Tell the user they exist and that the provision may have changed.",
+          }),
+        });
+      } catch (err) {
+        const message = safeErrorMessage(err, "Ghana amendment lookup failed.");
+        const event: GhanaLawToolEvent = {
+          type: "ghana_law_find_amendments",
+          act_name: actName,
+          amendments: [],
+          error: message,
+        };
+        write(`data: ${JSON.stringify(event)}\n\n`);
+        ghanaLawEvents.push(event);
+        toolResults.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: message }),
+        });
+      }
     } else if (tc.function.name === "edit_document" && docIndex) {
       const rawDocId = args.doc_id as string;
       const editsRaw = args.edits as unknown[] | undefined;
@@ -3626,6 +3875,7 @@ export async function runToolCalls(
     workflowsApplied,
     docsEdited,
     courtlistenerEvents,
+    ghanaLawEvents,
     caseCitationEvents,
     mcpEvents,
   };
@@ -3852,6 +4102,7 @@ type AssistantEvent =
     }
   | CaseCitationEvent
   | CourtlistenerToolEvent
+  | GhanaLawToolEvent
   | McpToolEvent
   | { type: "case_opinions"; cluster_id: number; case: unknown }
   | { type: "content"; text: string }
@@ -4146,6 +4397,7 @@ export async function runLLMStream(params: {
           workflowsApplied,
           docsEdited,
           courtlistenerEvents,
+          ghanaLawEvents,
           caseCitationEvents,
           mcpEvents,
         } = await runToolCalls(
@@ -4215,6 +4467,9 @@ export async function runLLMStream(params: {
           });
         }
         for (const event of courtlistenerEvents) {
+          events.push(event);
+        }
+        for (const event of ghanaLawEvents) {
           events.push(event);
         }
         for (const event of mcpEvents) {

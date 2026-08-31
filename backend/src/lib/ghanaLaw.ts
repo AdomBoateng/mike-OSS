@@ -54,6 +54,17 @@ const LEGISLATION_COLLECTION_PATTERNS: RegExp[] = [
 /** Collections whose names match above but which are not legislation. */
 const COLLECTION_EXCLUSIONS = /report|estimate|budget|annual|hansard|order paper/i;
 
+/**
+ * Item titles that are not legislation even though they sit in a legislation
+ * collection. Scoping by collection is necessary but not sufficient: the
+ * repository files committee reports alongside the instruments they concern, so
+ * a search for "Road Traffic Amendment" returns "Report of the Committee on
+ * Subsidiary Legislation on the Road Traffic (Amendment) Regulations" — which
+ * reads like law and is not.
+ */
+const NON_LEGISLATION_TITLE =
+  /^\s*(report|memorandum|minutes|order paper|votes and proceedings)\b/i;
+
 export function ghanaLawBaseUrl(): string {
   return (process.env.GHANA_LAW_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(
     /\/+$/,
@@ -187,7 +198,8 @@ export async function searchLegislation(
       const objs = data._embedded?.searchResult?._embedded?.objects ?? [];
       return objs
         .map((o) => toItem(o, names, uuid))
-        .filter((x): x is LegislationItem => !!x);
+        .filter((x): x is LegislationItem => !!x)
+        .filter((x) => !NON_LEGISLATION_TITLE.test(x.title));
     }),
   );
 
@@ -214,14 +226,52 @@ export async function searchLegislation(
 export async function findAmendments(
   actName: string,
 ): Promise<LegislationItem[]> {
-  const stem = actName
-    .replace(/\(.*?\)/g, " ")
-    .replace(/\b(act|law|decree)\b.*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const stem = principalActStem(actName);
   if (!stem) return [];
+
   const hits = await searchLegislation(`${stem} Amendment`, { limit: 25 });
-  return hits.filter((h) => /amendment/i.test(h.title));
+
+  // The repository's search is a loose full-text match, so querying
+  // "Companies Amendment" happily returns the Income Tax (Amendment) Act and
+  // the Civil Proceedings (Fees) (Amendment) Rules. Presenting those as
+  // amendments to the Companies Act is worse than returning nothing — it is a
+  // confident, wrong statement about what the law says. So require the
+  // candidate to name the principal Act as well as being an amendment.
+  const stemWords = significantWords(stem);
+  if (stemWords.length === 0) return [];
+  return hits.filter((h) => {
+    if (!/amendment/i.test(h.title)) return false;
+    const title = normaliseTitle(h.title);
+    // Padded on both sides so matching is on whole words, not substrings.
+    return stemWords.every((w) => title.includes(` ${w} `));
+  });
+}
+
+/** Strip punctuation and lowercase, so titles compare on words alone. */
+function normaliseTitle(value: string): string {
+  return ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
+}
+
+/**
+ * The distinguishing words of a principal Act's short title — everything before
+ * "Act"/"Law"/"Decree", with the year and any bracketed qualifier removed.
+ * "National Health Insurance Act, 2003 (Act 650)" -> "national health insurance".
+ */
+export function principalActStem(actName: string): string {
+  return actName
+    .replace(/\(.*?\)/g, " ")
+    .replace(/\b(act|law|decree|instrument)\b.*$/i, " ")
+    .replace(/\b(19|20)\d{2}\b/g, " ")
+    .replace(/[^A-Za-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** Stem words that must appear in a candidate title, ignoring filler. */
+export function significantWords(stem: string): string[] {
+  const STOP = new Set(["the", "of", "and", "for", "a", "an", "to", "in", "on"]);
+  return stem.split(" ").filter((w) => w.length > 1 && !STOP.has(w));
 }
 
 // --- text ------------------------------------------------------------------

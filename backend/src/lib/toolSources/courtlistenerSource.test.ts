@@ -9,8 +9,17 @@ import {
 import { defaultToolSources, buildToolSourceContext } from "./index";
 import { COURTLISTENER_SOURCE_ID } from "./courtlistenerSource";
 
-const on = buildToolSourceContext(true);
-const off = buildToolSourceContext(false);
+// Isolate CourtListener: these assertions are about its own contribution, so
+// other registered sources are switched off rather than being allowed to change
+// the aggregate the registry returns.
+const on = buildToolSourceContext({
+  includeResearchTools: true,
+  includeGhanaLaw: false,
+});
+const off = buildToolSourceContext({
+  includeResearchTools: false,
+  includeGhanaLaw: false,
+});
 
 describe("default registry: CourtListener", () => {
   test("is registered", () => {
@@ -20,7 +29,8 @@ describe("default registry: CourtListener", () => {
   });
 
   // Regression guard: registry-assembled output must match the previous
-  // hardcoded values in chatTools.ts exactly.
+  // hardcoded values in chatTools.ts exactly. Scoped to this source alone —
+  // see the context definitions above.
   test("assembled tools match COURTLISTENER_TOOLS when research is on", () => {
     assert.deepEqual(defaultToolSources.tools(on), COURTLISTENER_TOOLS);
   });
@@ -32,6 +42,18 @@ describe("default registry: CourtListener", () => {
   test("contributes nothing when research is off", () => {
     assert.deepEqual(defaultToolSources.tools(off), []);
     assert.equal(defaultToolSources.systemPrompt(off), "");
+  });
+
+  test("another enabled source does not displace CourtListener", () => {
+    const both = buildToolSourceContext({
+      includeResearchTools: true,
+      includeGhanaLaw: true,
+    });
+    const names = defaultToolSources.tools(both).map((t) => t.function.name);
+    for (const name of Object.values(COURTLISTENER_TOOL_NAMES)) {
+      assert.ok(names.includes(name), `${name} missing when Ghana is also on`);
+    }
+    assert.match(defaultToolSources.systemPrompt(both), /US CASE LAW RESEARCH/);
   });
 
   test("routes every CourtListener tool name to the source", () => {

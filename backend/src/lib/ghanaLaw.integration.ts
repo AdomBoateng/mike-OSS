@@ -107,6 +107,28 @@ describe("Ghana law repository (live)", { skip }, () => {
     const amendments = await findAmendments("National Health Insurance Act");
     for (const a of amendments) {
       assert.match(a.title, /amendment/i);
+      // Must actually amend THIS Act. The repository's search is a loose
+      // full-text match, so an unfiltered query returned the Income Tax and VAT
+      // amendment Acts for "Companies" - presented to a user, that is a
+      // confident false statement about what amends what.
+      assert.match(a.title, /national health insurance/i);
+    }
+  });
+
+  test("findAmendments does not attribute unrelated amendment Acts", async () => {
+    const amendments = await findAmendments("Companies Act, 2019 (ACT 992)");
+    for (const a of amendments) {
+      assert.match(a.title, /companies/i, `unrelated amendment returned: ${a.title}`);
+    }
+  });
+
+  test("committee reports never appear as legislation", async () => {
+    // Scoping by collection is not enough: reports are filed alongside the
+    // instruments they concern, so titles are filtered too.
+    for (const q of ["Road Traffic", "Companies Act", "Health Insurance"]) {
+      const hits = await searchLegislation(q, { limit: 10 });
+      const reports = hits.filter((h) => /^\s*report/i.test(h.title));
+      assert.equal(reports.length, 0, `report leaked for "${q}": ${reports.map(r=>r.title).join("; ")}`);
     }
   });
 });

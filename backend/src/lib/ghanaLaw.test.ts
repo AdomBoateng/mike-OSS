@@ -5,7 +5,9 @@ import {
   findInLegislationText,
   ghanaLawBaseUrl,
   ghanaLawEnabled,
+  principalActStem,
   resetGhanaLawCache,
+  significantWords,
 } from "./ghanaLaw";
 
 const REAL_ENV = { ...process.env };
@@ -105,5 +107,28 @@ describe("findInLegislationText", () => {
   test("text with no page markers still matches, with a null page", () => {
     const hits = findInLegislationText("no markers here, just needle text", "needle");
     assert.equal(hits[0].page, null);
+  });
+});
+
+describe("principalActStem", () => {
+  test("keeps the distinguishing words and drops Act, year and brackets", () => {
+    assert.equal(
+      principalActStem("National Health Insurance Act, 2003 (Act 650)"),
+      "national health insurance",
+    );
+    assert.equal(principalActStem("Companies Act, 2019 (ACT 992)"), "companies");
+  });
+
+  test("handles a bare short title", () => {
+    assert.equal(principalActStem("Companies"), "companies");
+  });
+});
+
+describe("significantWords", () => {
+  test("drops filler words that would match anything", () => {
+    assert.deepEqual(
+      significantWords("commission of inquiry and the transfer"),
+      ["commission", "inquiry", "transfer"],
+    );
   });
 });
