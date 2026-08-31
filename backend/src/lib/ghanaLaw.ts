@@ -24,6 +24,8 @@
 
 import { downloadFile, uploadFile, isStorageEnabled } from "./storage";
 import { extractPdfText, assessExtractedText, type TextQuality } from "./pdfText";
+import { ocrAvailable, ocrPdfPages, OCR_MAX_PAGES } from "./ocr";
+import type { UserApiKeys } from "./llm";
 
 const DEFAULT_BASE_URL = "https://repository.parliament.gh/server/api";
 
@@ -90,7 +92,7 @@ export interface LegislationItem {
 export interface LegislationText {
   item: LegislationItem;
   quality: TextQuality;
-  /** Empty unless quality === "text". */
+  /** Empty unless quality is "text" or "ocr". */
   text: string;
   pages: number;
   chars: number;
@@ -100,6 +102,8 @@ export interface LegislationText {
    * observed), so callers should surface both and let the reader judge.
    */
   filename: string | null;
+  /** Set when quality is "ocr": how much of the document was transcribed. */
+  ocr?: { pagesRead: number; truncated: boolean };
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -322,8 +326,15 @@ export async function getLegislationItem(
   }
 }
 
-function cacheKey(uuid: string): string {
-  return `${CACHE_PREFIX}/${uuid}.txt`;
+/**
+ * Cache key. OCR results are keyed by how many pages were transcribed, because
+ * a partial transcription must not be served to a caller that asked for more —
+ * otherwise the first small read would permanently cap the document.
+ */
+function cacheKey(uuid: string, ocrPages?: number): string {
+  return ocrPages
+    ? `${CACHE_PREFIX}/${uuid}.ocr-${ocrPages}.json`
+    : `${CACHE_PREFIX}/${uuid}.json`;
 }
 
 /**
@@ -334,13 +345,22 @@ function cacheKey(uuid: string): string {
  */
 export async function fetchLegislationText(
   uuid: string,
+  opts: { ocr?: { model: string; apiKeys?: UserApiKeys; maxPages?: number } } = {},
 ): Promise<LegislationText | null> {
   const item = await getLegislationItem(uuid);
   if (!item) return null;
 
   if (isStorageEnabled()) {
     try {
-      const cached = await downloadFile(cacheKey(uuid));
+      // Prefer an OCR transcription covering at least what was asked for;
+      // otherwise fall back to the plain extraction result.
+      const wantedPages = opts.ocr
+        ? Math.min(opts.ocr.maxPages ?? OCR_MAX_PAGES, OCR_MAX_PAGES)
+        : 0;
+      const cached =
+        (wantedPages
+          ? await downloadFile(cacheKey(uuid, wantedPages))
+          : null) ?? (await downloadFile(cacheKey(uuid)));
       if (cached) {
         const payload = JSON.parse(
           Buffer.from(cached).toString("utf8"),
@@ -371,10 +391,13 @@ export async function fetchLegislationText(
     throw new Error(`Could not download "${pdf.name}" (${res.status}).`);
   }
   const raw = await res.arrayBuffer();
-  const text = await extractPdfText(raw);
+  // pdf.js takes ownership of the buffer it is handed and detaches it, so give
+  // it a copy — `raw` is still needed for OCR when there turns out to be no
+  // text layer.
+  const text = await extractPdfText(raw.slice(0));
   const assessment = assessExtractedText(text);
 
-  const result: LegislationText = {
+  let result: LegislationText = {
     item,
     quality: assessment.quality,
     text: assessment.quality === "text" ? text : "",
@@ -383,11 +406,51 @@ export async function fetchLegislationText(
     filename: pdf.name,
   };
 
+  // No text layer, but the page images are perfectly legible to a vision model.
+  // Transcribe rather than declaring the Act unreadable — flagged as "ocr" so
+  // neither the model nor the reader mistakes a transcription for the authentic
+  // text layer.
+  if (
+    assessment.quality === "scan" &&
+    opts.ocr &&
+    ocrAvailable() &&
+    assessment.pages > 0
+  ) {
+    try {
+      const ocr = await ocrPdfPages({
+        pdf: raw,
+        model: opts.ocr.model,
+        totalPages: assessment.pages,
+        maxPages: opts.ocr.maxPages,
+        apiKeys: opts.ocr.apiKeys,
+      });
+      const ocrAssessment = assessExtractedText(ocr.text);
+      if (ocrAssessment.quality === "text") {
+        result = {
+          ...result,
+          quality: "ocr",
+          text: ocr.text,
+          chars: ocrAssessment.chars,
+          ocr: { pagesRead: ocr.pagesRead, truncated: ocr.truncated },
+        };
+      }
+    } catch (err) {
+      // OCR is a best-effort improvement on "unreadable"; if it fails the
+      // caller still gets the honest scan result.
+      console.error("[ghanaLaw] OCR failed for", uuid, err);
+    }
+  }
+
   if (isStorageEnabled()) {
     try {
       const { item: _omit, ...payload } = result;
       await uploadFile(
-        cacheKey(uuid),
+        cacheKey(
+          uuid,
+          result.quality === "ocr"
+            ? Math.min(opts.ocr?.maxPages ?? OCR_MAX_PAGES, OCR_MAX_PAGES)
+            : undefined,
+        ),
         new TextEncoder().encode(JSON.stringify(payload)).buffer as ArrayBuffer,
         "application/json",
       );

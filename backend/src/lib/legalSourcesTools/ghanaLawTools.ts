@@ -12,8 +12,11 @@ export type GhanaLawToolEvent =
         type: "ghana_law_read";
         title: string;
         url: string;
-        /** "text" — extracted; "scan" — image-only; "empty" — nothing attached. */
-        quality: "text" | "scan" | "empty";
+        /**
+         * "text" — real text layer; "ocr" — transcribed from page images;
+         * "scan" — image-only, not transcribed; "empty" — nothing attached.
+         */
+        quality: "text" | "ocr" | "scan" | "empty";
         pages: number;
         chars: number;
         /** Offset of the slice returned, for a paginated read. */
@@ -76,10 +79,13 @@ You MUST observe these limits when answering:
   changed.
 - Always cite the Act by short title, Act number and year, and give the
   repository URL returned by the tool.
-- Roughly a third of the collection is scanned images with no machine-readable
-  text. When a read returns quality "scan", say plainly that the Act is in the
-  repository but only as a scanned image you cannot read, and do not substitute
-  remembered text for it. The same applies to "empty".
+- Roughly a third of the collection is scanned images with no text layer. Those
+  are transcribed for you by a vision model and come back as quality "ocr". OCR
+  text is accurate but NOT authoritative — a transcription can drop a word or
+  misread a figure. When you quote text of quality "ocr", say it came from OCR
+  of a scanned document and should be checked against the original. If a read
+  still returns "scan" or "empty", the document could not be transcribed at all:
+  say so plainly and do not substitute remembered text for it.
 - Coverage of subsidiary legislation is thin. If a search finds nothing, say the
   repository has no matching item — never conclude that no such law exists.
 - If the attached filename disagrees with the item title, mention both; the
@@ -144,7 +150,7 @@ export const GHANA_LAW_TOOLS = [
         function: {
             name: GHANA_LAW_TOOL_NAMES.read,
             description:
-                "Read continuous text from one Act, starting at a character offset. Returns at most ~12,000 characters per call along with the total length and the next offset, so you can page through. Prefer ghana_law_find_in unless you need to read a passage in sequence. If the Act is a scanned image this reports quality 'scan' and returns no text.",
+                "Read continuous text from one Act, starting at a character offset. Returns at most ~12,000 characters per call along with the total length and the next offset, so you can page through. Prefer ghana_law_find_in unless you need to read a passage in sequence. If the Act has no text layer it is transcribed from page images and reported as quality 'ocr' (accurate but not authoritative, and only the first pages are transcribed); if even that fails it reports 'scan' with no text.",
             parameters: {
                 type: "object",
                 properties: {

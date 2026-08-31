@@ -428,8 +428,13 @@ export async function streamCustom(
     // turn ends with only tool activity and no answer.
     if (!finishedWithFinalAnswer) {
       throwIfAborted(params.abortSignal);
+      // Sent as a user turn, not a system one: vLLM (and other strict
+      // OpenAI-compatible servers) reject a system message that is not the
+      // first in the conversation — "System message must be at the beginning" —
+      // which failed the whole turn with a 400 at exactly the moment this pass
+      // exists to rescue.
       messages.push({
-        role: "system",
+        role: "user",
         content:
           "You have gathered enough information using the tools. Do not request any more tools. Write your complete final answer for the user now, based only on the information already gathered above.",
       });
@@ -462,6 +467,54 @@ export async function completeCustomText(params: {
       model: customModelName(params.model),
       messages,
       max_tokens: params.maxTokens ?? 512,
+      stream: false,
+    },
+  });
+  const json = (await response.json()) as {
+    choices?: { message?: { content?: string | null } }[];
+  };
+  return json.choices?.[0]?.message?.content ?? "";
+}
+
+/**
+ * One-shot vision completion: a text instruction plus one image.
+ *
+ * Deliberately narrow. The streaming path speaks text-only `{role, content}`
+ * messages across every provider, and widening that union to carry image parts
+ * would touch all four adapters for the sake of one caller (OCR of scanned
+ * legislation). If a second vision use case appears, generalise then.
+ *
+ * `imageBase64` is raw base64 with no data: prefix.
+ */
+export async function completeCustomVision(params: {
+  model: string;
+  instruction: string;
+  imageBase64: string;
+  imageMimeType?: string;
+  maxTokens?: number;
+  apiKeys?: UserApiKeys;
+}): Promise<string> {
+  const baseUrl = customBaseUrl(params.apiKeys);
+  const response = await postChatCompletion({
+    baseUrl,
+    headers: authHeaders(params.apiKeys),
+    body: {
+      model: customModelName(params.model),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: params.instruction },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${params.imageMimeType ?? "image/png"};base64,${params.imageBase64}`,
+              },
+            },
+          ],
+        },
+      ],
+      max_tokens: params.maxTokens ?? 4000,
       stream: false,
     },
   });

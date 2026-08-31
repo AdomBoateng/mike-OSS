@@ -2353,10 +2353,12 @@ export function AssistantMessage({
                 : event.error
                   ? event.error
                   : unreadable
-                    ? "scanned image, no readable text"
-                    : event.truncated
-                      ? "read an extract"
-                      : "read in full";
+                    ? "scanned image, could not be transcribed"
+                    : event.quality === "ocr"
+                      ? "transcribed from a scan — verify against the original"
+                      : event.truncated
+                        ? "read an extract"
+                        : "read in full";
             return (
                 <CourtListenerBlock
                     key={globalIdx}

@@ -182,8 +182,11 @@ export type AssistantEvent =
       type: "ghana_law_read";
       title: string;
       url: string;
-      /** "scan"/"empty" mean the Act exists but has no machine-readable text. */
-      quality: "text" | "scan" | "empty";
+      /**
+       * "text" — real text layer; "ocr" — transcribed from page images by a
+       * vision model; "scan"/"empty" — present but not readable at all.
+       */
+      quality: "text" | "ocr" | "scan" | "empty";
       pages?: number;
       chars?: number;
       offset?: number;

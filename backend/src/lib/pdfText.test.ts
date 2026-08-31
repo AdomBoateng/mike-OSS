@@ -53,3 +53,21 @@ describe("assessExtractedText", () => {
     assert.equal(a.quality, "text");
   });
 });
+
+describe("assessExtractedText — OCR output", () => {
+  test("a transcription is classified as text so it can be searched", () => {
+    // ocrPdfPages emits the same [Page N] block shape; ghanaLaw relabels the
+    // result as quality "ocr" afterwards, but the assessment must first agree
+    // there is real text here.
+    const a = assessExtractedText(pages("Section 1. ".repeat(60), "Section 2. ".repeat(60)));
+    assert.equal(a.quality, "text");
+    assert.equal(a.pages, 2);
+  });
+
+  test("a page that failed to transcribe does not make the whole run look real", () => {
+    const failed = Array(10).fill("[transcription failed: timeout]");
+    const a = assessExtractedText(pages(...failed));
+    // Short marker text across many pages stays under the per-page threshold.
+    assert.ok(a.charsPerPage < 60);
+  });
+});

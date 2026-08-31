@@ -56,7 +56,12 @@ export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
   }
 }
 
-export type TextQuality = "text" | "scan" | "empty";
+/**
+ * "text" — a real text layer. "ocr" — transcribed from images by a vision
+ * model, so accurate but not authoritative. "scan" — image-only and not (yet)
+ * transcribed. "empty" — nothing readable attached.
+ */
+export type TextQuality = "text" | "ocr" | "scan" | "empty";
 
 export interface TextAssessment {
   quality: TextQuality;

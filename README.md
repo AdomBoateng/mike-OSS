@@ -35,8 +35,8 @@ version, use upstream rather than this fork.
 - An LDAP directory the server can reach (developed against FreeIPA)
 - An S3-compatible bucket (self-hosted MinIO/Ceph, AWS S3, or R2)
 - An OpenAI-compatible model endpoint — vLLM, Ollama, LM Studio, TGI
-- LibreOffice, for DOC/DOCX → PDF conversion (bundled in the backend image; install
-  locally for `npm run dev`)
+- LibreOffice, for DOC/DOCX → PDF conversion, and poppler-utils (`pdftoppm`) for OCR of scanned
+  legislation — both bundled in the backend image; install locally for `npm run dev`
 - Optional: an SMTP server for collaborator invitations
 - Optional: a CourtListener API token for US case-law lookup
 
@@ -146,7 +146,10 @@ Know what it is before relying on it:
   "Revised Edition" series is scanned images. The assistant surfaces the amendment chain and says
   the text may have changed, but nothing here states the law in force.
 - Roughly a third of the collection is scanned with no machine-readable text, and the year does not
-  predict which. Those are reported as unreadable rather than as empty.
+  predict which. Those pages are rasterised and transcribed by the multimodal model, and the result
+  is marked as **OCR** — accurate but not authoritative, and to be checked against the original
+  before it is relied on. Only the first pages of a long scan are transcribed per request. Anything
+  that cannot be transcribed at all is reported as unreadable rather than as empty.
 - Coverage of subsidiary legislation is thin (a handful of Legislative Instruments), so a search
   finding nothing does not mean no such law exists.
 - There is **no Ghanaian case law** source. Legislation only.

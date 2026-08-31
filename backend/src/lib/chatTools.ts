@@ -2278,9 +2278,12 @@ function cachedCaseNotFetchedResult(clusterId: number | null) {
  * is built to avoid.
  */
 function ghanaQualityNote(
-  quality: "text" | "scan" | "empty",
+  quality: "text" | "ocr" | "scan" | "empty",
   found: number,
 ): string {
+  if (quality === "ocr") {
+    return "This text was TRANSCRIBED FROM PAGE IMAGES by a vision model because the document has no text layer. It is accurate but not authoritative: a transcription can drop a word or misread a figure, either of which changes meaning. Quote it if useful, but say the text came from OCR of a scanned document and should be checked against the original before being relied on.";
+  }
   if (quality === "scan") {
     return "This Act is in the repository only as a scanned image with no machine-readable text. Say so plainly. Do not supply the text from memory.";
   }
@@ -2305,6 +2308,8 @@ export async function runToolCalls(
   projectId?: string | null,
   courtlistenerState?: CourtlistenerTurnState,
   apiKeys?: import("./llm").UserApiKeys,
+  /** Model used for OCR of scanned legislation; must be vision-capable. */
+  model?: string,
 ): Promise<{
   toolResults: unknown[];
   docsRead: { filename: string; document_id?: string }[];
@@ -3167,12 +3172,15 @@ export async function runToolCalls(
       const itemId = typeof args.itemId === "string" ? args.itemId : "";
       const query = typeof args.query === "string" ? args.query : "";
       try {
-        const doc = await fetchLegislationText(itemId);
+        const doc = await fetchLegislationText(itemId, {
+          ocr: model ? { model, apiKeys } : undefined,
+        });
         if (!doc) {
           throw new Error(`No repository item with id ${itemId}.`);
         }
+        const readable = doc.quality === "text" || doc.quality === "ocr";
         const matches =
-          doc.quality === "text"
+          readable
             ? findInLegislationText(doc.text, query, {
                 maxMatches:
                   typeof args.maxMatches === "number"
@@ -3225,16 +3233,18 @@ export async function runToolCalls(
           ? Math.floor(args.offset)
           : 0;
       try {
-        const doc = await fetchLegislationText(itemId);
+        const doc = await fetchLegislationText(itemId, {
+          ocr: model ? { model, apiKeys } : undefined,
+        });
         if (!doc) {
           throw new Error(`No repository item with id ${itemId}.`);
         }
-        const slice =
-          doc.quality === "text"
-            ? doc.text.slice(offset, offset + GHANA_READ_CHUNK_CHARS)
-            : "";
+        const readable = doc.quality === "text" || doc.quality === "ocr";
+        const slice = readable
+          ? doc.text.slice(offset, offset + GHANA_READ_CHUNK_CHARS)
+          : "";
         const nextOffset = offset + slice.length;
-        const truncated = doc.quality === "text" && nextOffset < doc.text.length;
+        const truncated = readable && nextOffset < doc.text.length;
         const event: GhanaLawToolEvent = {
           type: "ghana_law_read",
           title: doc.item.title,
@@ -4415,6 +4425,7 @@ export async function runLLMStream(params: {
           projectId,
         courtlistenerTurnState,
         apiKeys,
+        model,
       );
         throwIfAborted(signal);
         for (const r of docsRead) {
