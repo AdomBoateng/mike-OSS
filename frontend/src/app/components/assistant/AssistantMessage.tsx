@@ -50,6 +50,10 @@ function toolCallLabel(name: string): string {
     if (name === "courtlistener_read_case") return "Reading case...";
     if (name === "courtlistener_verify_citations")
         return "Verifying citations...";
+    if (name === "ghana_law_search") return "Searching Ghana legislation...";
+    if (name === "ghana_law_find_in") return "Searching legislation...";
+    if (name === "ghana_law_read") return "Reading legislation...";
+    if (name === "ghana_law_find_amendments") return "Checking amendments...";
     if (name.startsWith("mcp_")) return "Using connector...";
     return name ? `Running ${name}...` : "Working...";
 }
@@ -2270,6 +2274,149 @@ export function AssistantMessage({
                     hasError={!!event.error}
                     showConnector={showConnector}
                     items={items.length > 0 ? items : undefined}
+                />
+            );
+        }
+        // Ghana legislation. CourtListenerBlock is generic label/detail/items
+        // chrome despite its name, so it is reused rather than duplicated.
+        if (event.type === "ghana_law_search") {
+            const count = event.result_count ?? 0;
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : event.error
+                  ? event.error
+                  : `${count} ${count === 1 ? "result" : "results"}${event.query ? ` for "${event.query}"` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching Ghana legislation"
+                            : event.error
+                              ? "Ghana legislation search failed"
+                              : "Searched Ghana legislation"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                />
+            );
+        }
+        if (event.type === "ghana_law_find_in") {
+            const matches = event.match_count ?? 0;
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : event.error
+                  ? event.error
+                  : `${matches} ${matches === 1 ? "passage" : "passages"}${event.query ? ` for "${event.query}"` : ""}`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Searching ${event.title}`
+                            : event.error
+                              ? "Legislation search failed"
+                              : `Searched ${event.title}`
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                    items={
+                        event.url
+                            ? [
+                                  {
+                                      caseName: event.title,
+                                      citation: null,
+                                      url: event.url,
+                                  },
+                              ]
+                            : undefined
+                    }
+                />
+            );
+        }
+        if (event.type === "ghana_law_read") {
+            // A scan is not an empty result: the Act is present but has no
+            // machine-readable text. Say that, so the reader can tell the
+            // difference between "not found" and "found but unreadable".
+            const unreadable =
+                event.quality === "scan" || event.quality === "empty";
+            const detail = event.isStreaming
+                ? undefined
+                : event.error
+                  ? event.error
+                  : unreadable
+                    ? "scanned image, no readable text"
+                    : event.truncated
+                      ? "read an extract"
+                      : "read in full";
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Reading ${event.title}`
+                            : event.error
+                              ? "Could not read legislation"
+                              : `Read ${event.title}`
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error || unreadable}
+                    showConnector={showConnector}
+                    items={
+                        event.url
+                            ? [
+                                  {
+                                      caseName: event.title,
+                                      citation: null,
+                                      url: event.url,
+                                  },
+                              ]
+                            : undefined
+                    }
+                />
+            );
+        }
+        if (event.type === "ghana_law_find_amendments") {
+            const count = event.amendments?.length ?? 0;
+            const detail = event.isStreaming
+                ? undefined
+                : event.error
+                  ? event.error
+                  : count === 0
+                    ? "none recorded in the repository"
+                    : `${count} found — not folded into the Act`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? `Checking amendments to ${event.act_name}`
+                            : event.error
+                              ? "Amendment check failed"
+                              : `Checked amendments to ${event.act_name}`
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    hasError={!!event.error}
+                    showConnector={showConnector}
+                    items={
+                        count > 0
+                            ? event.amendments.map((a) => ({
+                                  caseName: a.title,
+                                  citation: a.issued,
+                                  url: a.url,
+                              }))
+                            : undefined
+                    }
                 />
             );
         }

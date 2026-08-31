@@ -73,6 +73,7 @@ type UserProfileRow = {
     tabular_model: string;
     mfa_on_login: boolean | null;
     legal_research_us: boolean | null;
+    legal_research_gh: boolean | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -178,7 +179,7 @@ function mcpOAuthPopupCsp(nonce: string) {
 }
 
 const PROFILE_SELECT =
-    "display_name, organisation, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login, legal_research_us";
+    "display_name, organisation, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login, legal_research_us, legal_research_gh";
 const PROFILE_SELECT_NO_LEGAL =
     "display_name, organisation, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login";
 const LEGACY_PROFILE_SELECT =
@@ -219,6 +220,9 @@ async function selectProfile(
         const row = legacy.data as Record<string, unknown>;
         if (!("legal_research_us" in row)) {
             Object.assign(row, { legal_research_us: true });
+        }
+        if (!("legal_research_gh" in row)) {
+            Object.assign(row, { legal_research_gh: true });
         }
     }
     return legacy;
@@ -315,6 +319,7 @@ function serializeProfile(
         tabularModel: resolveModel(row.tabular_model, DEFAULT_TABULAR_MODEL),
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
+        legalResearchGh: row.legal_research_gh !== false,
         // Only the user-supplied override is echoed back for editing; when the
         // value comes from the server env we hide it but flag the source so the
         // browser can render the field read-only, mirroring API-key handling.
@@ -332,6 +337,7 @@ function validateProfilePayload(body: unknown):
               title_model?: string;
               tabular_model?: string;
               legal_research_us?: boolean;
+              legal_research_gh?: boolean;
               updated_at: string;
           };
       }
@@ -346,6 +352,7 @@ function validateProfilePayload(body: unknown):
         "titleModel",
         "tabularModel",
         "legalResearchUs",
+        "legalResearchGh",
     ]);
     const invalidField = Object.keys(raw).find(
         (key) => !allowedFields.has(key),
@@ -361,6 +368,7 @@ function validateProfilePayload(body: unknown):
         title_model?: string;
         tabular_model?: string;
         legal_research_us?: boolean;
+        legal_research_gh?: boolean;
         updated_at: string;
     } = { updated_at: new Date().toISOString() };
 
@@ -394,6 +402,16 @@ function validateProfilePayload(body: unknown):
             };
         }
         update.legal_research_us = raw.legalResearchUs;
+    }
+
+    if ("legalResearchGh" in raw) {
+        if (typeof raw.legalResearchGh !== "boolean") {
+            return {
+                ok: false,
+                detail: "legalResearchGh must be a boolean",
+            };
+        }
+        update.legal_research_gh = raw.legalResearchGh;
     }
 
     return { ok: true, update };

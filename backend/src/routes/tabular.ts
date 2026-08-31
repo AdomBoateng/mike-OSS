@@ -1334,7 +1334,12 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             db,
             write,
             extraTools: TABULAR_TOOLS,
+            // Tabular review is bulk extraction over the user's own documents;
+            // no research source belongs here. Both jurisdictions are named
+            // explicitly so a newly registered source cannot leak in by
+            // defaulting to on.
             includeResearchTools: false,
+            includeGhanaLaw: false,
             tabularStore,
             buildCitations: (text) =>
                 extractTabularAnnotations(text, tabularStore),

@@ -6,11 +6,15 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import { AccountSection } from "../AccountSection";
 
 export default function FeaturesPage() {
-    const { profile, updateLegalResearchUs } = useUserProfile();
+    const { profile, updateLegalResearchUs, updateLegalResearchGh } =
+        useUserProfile();
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
     const [draftLegalResearchUs, setDraftLegalResearchUs] = useState<
+        boolean | null
+    >(null);
+    const [draftLegalResearchGh, setDraftLegalResearchGh] = useState<
         boolean | null
     >(null);
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -22,20 +26,31 @@ export default function FeaturesPage() {
     }, []);
 
     const persistedLegalResearchUs = profile?.legalResearchUs ?? true;
+    const persistedLegalResearchGh = profile?.legalResearchGh ?? true;
     const usEnabled = draftLegalResearchUs ?? persistedLegalResearchUs;
-    const hasChanges =
+    const ghEnabled = draftLegalResearchGh ?? persistedLegalResearchGh;
+    const usChanged =
         draftLegalResearchUs !== null &&
         draftLegalResearchUs !== persistedLegalResearchUs;
+    const ghChanged =
+        draftLegalResearchGh !== null &&
+        draftLegalResearchGh !== persistedLegalResearchGh;
+    const hasChanges = usChanged || ghChanged;
 
     const handleUpdateLegalResearch = async () => {
         if (saving) return;
         setSaved(false);
         setSaveError(null);
         setSaving(true);
-        const ok = await updateLegalResearchUs(usEnabled);
+        // Only send what actually changed, so toggling one jurisdiction does
+        // not rewrite the other.
+        const ok =
+            (!usChanged || (await updateLegalResearchUs(usEnabled))) &&
+            (!ghChanged || (await updateLegalResearchGh(ghEnabled)));
         setSaving(false);
         if (ok) {
             setDraftLegalResearchUs(null);
+            setDraftLegalResearchGh(null);
             setSaved(true);
             if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
             savedTimerRef.current = setTimeout(() => setSaved(false), 1600);
@@ -61,7 +76,7 @@ export default function FeaturesPage() {
                             <p className="text-sm text-gray-500">
                                 Choose which jurisdictions the assistant can
                                 research. When a jurisdiction is enabled, its
-                                case-law research tools are available in chat.
+                                research tools are available in chat.
                             </p>
                         </div>
                         <div className="mt-4 flex items-start justify-between gap-3 px-3 bg-gray-50 py-3 rounded-md">
@@ -88,6 +103,39 @@ export default function FeaturesPage() {
                                 disabled={saving}
                                 className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border transition-colors ${
                                     usEnabled
+                                        ? "border-gray-950 bg-gray-950 text-white"
+                                        : "border-gray-300 bg-white text-transparent"
+                                } disabled:cursor-not-allowed disabled:opacity-45`}
+                            >
+                                <Check className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
+                        <div className="mt-2 flex items-start justify-between gap-3 px-3 bg-gray-50 py-3 rounded-md">
+                            <label
+                                htmlFor="jurisdiction-gh"
+                                className="min-w-0 cursor-pointer select-none"
+                            >
+                                <p className="text-sm text-gray-900">Ghana</p>
+                                <p className="text-sm text-gray-500">
+                                    Enable Ghana legislation research
+                                    (Parliament of Ghana) in chat. Covers Acts
+                                    as enacted &mdash; not case law, and not
+                                    consolidated with later amendments.
+                                </p>
+                            </label>
+                            <button
+                                id="jurisdiction-gh"
+                                type="button"
+                                role="checkbox"
+                                aria-checked={ghEnabled}
+                                onClick={() => {
+                                    setDraftLegalResearchGh(!ghEnabled);
+                                    setSaved(false);
+                                    setSaveError(null);
+                                }}
+                                disabled={saving}
+                                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border transition-colors ${
+                                    ghEnabled
                                         ? "border-gray-950 bg-gray-950 text-white"
                                         : "border-gray-300 bg-white text-transparent"
                                 } disabled:cursor-not-allowed disabled:opacity-45`}

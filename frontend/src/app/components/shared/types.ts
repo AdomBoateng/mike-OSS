@@ -167,6 +167,46 @@ export type AssistantEvent =
       error?: string;
       isStreaming?: boolean;
     }
+  // Ghana legislation (Parliament of Ghana repository). Must stay in sync with
+  // GhanaLawToolEvent in backend/src/lib/legalSourcesTools/ghanaLawTools.ts —
+  // these are persisted as chat message content, so a variant change is a
+  // data-format change, not just a rendering one.
+  | {
+      type: "ghana_law_search";
+      query: string;
+      result_count?: number;
+      error?: string;
+      isStreaming?: boolean;
+    }
+  | {
+      type: "ghana_law_read";
+      title: string;
+      url: string;
+      /** "scan"/"empty" mean the Act exists but has no machine-readable text. */
+      quality: "text" | "scan" | "empty";
+      pages?: number;
+      chars?: number;
+      offset?: number;
+      truncated?: boolean;
+      error?: string;
+      isStreaming?: boolean;
+    }
+  | {
+      type: "ghana_law_find_in";
+      title: string;
+      url: string;
+      query: string;
+      match_count?: number;
+      error?: string;
+      isStreaming?: boolean;
+    }
+  | {
+      type: "ghana_law_find_amendments";
+      act_name: string;
+      amendments: { title: string; url: string; issued: string | null }[];
+      error?: string;
+      isStreaming?: boolean;
+    }
   | {
       type: "courtlistener_get_cases";
       cluster_ids: number[];

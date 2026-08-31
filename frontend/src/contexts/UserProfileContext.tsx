@@ -35,6 +35,7 @@ interface UserProfile {
     tabularModel: string;
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
+    legalResearchGh: boolean;
     customLlmBaseUrl: string | null;
     customLlmConfigured: boolean;
     customLlmSource: ApiKeySource;
@@ -54,6 +55,7 @@ interface UserProfileContextType {
     ) => Promise<boolean>;
     updateMfaOnLogin: (enabled: boolean) => Promise<boolean>;
     updateLegalResearchUs: (enabled: boolean) => Promise<boolean>;
+    updateLegalResearchGh: (enabled: boolean) => Promise<boolean>;
     updateApiKey: (
         provider: ApiKeyProvider,
         value: string | null,
@@ -134,6 +136,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 tabularModel: "gemini-3-flash-preview",
                 mfaOnLogin: false,
                 legalResearchUs: true,
+                legalResearchGh: true,
                 customLlmBaseUrl: null,
                 customLlmConfigured: false,
                 customLlmSource: null,
@@ -276,6 +279,24 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user],
     );
 
+    const updateLegalResearchGh = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({
+                    legalResearchGh: enabled,
+                });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
     const updateApiKey = useCallback(
         async (
             provider: ApiKeyProvider,
@@ -363,6 +384,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 updateModelPreference,
                 updateMfaOnLogin,
                 updateLegalResearchUs,
+                updateLegalResearchGh,
                 updateApiKey,
                 updateCustomLlmBaseUrl,
                 reloadProfile,

@@ -584,13 +584,14 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     const {
         api_keys: apiKeys,
         legal_research_us: legalResearchUs,
+        legal_research_gh: legalResearchGh,
     } = await getUserModelSettings(userId, db);
     const apiMessages = buildMessages(
         enrichedMessages,
         docAvailability,
         undefined,
         undefined,
-        legalResearchUs,
+        { includeResearchTools: legalResearchUs, includeGhanaLaw: legalResearchGh },
     );
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
@@ -626,6 +627,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
             write,
             workflowStore,
             includeResearchTools: legalResearchUs,
+            includeGhanaLaw: legalResearchGh,
             model,
             apiKeys,
             signal: streamAbort.signal,

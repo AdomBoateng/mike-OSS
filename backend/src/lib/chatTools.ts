@@ -799,10 +799,10 @@ export function buildMessages(
   }[],
   systemPromptExtra?: string,
   docIndex?: DocIndex,
-  includeResearchTools = true,
+  researchFlags: boolean | ToolSourceFlags = true,
 ) {
   const formatted: unknown[] = [];
-  let systemContent = buildSystemPrompt(includeResearchTools);
+  let systemContent = buildSystemPrompt(researchFlags);
 
   if (systemPromptExtra) {
     systemContent += `\n\n${systemPromptExtra.trim()}`;
@@ -4151,6 +4151,7 @@ export async function runLLMStream(params: {
   write: (s: string) => void;
   extraTools?: unknown[];
   includeResearchTools?: boolean;
+  includeGhanaLaw?: boolean;
   workflowStore?: WorkflowStore;
   tabularStore?: TabularCellStore;
   buildCitations?: (fullText: string) => unknown[];
@@ -4177,6 +4178,7 @@ export async function runLLMStream(params: {
     write,
     extraTools,
     includeResearchTools = true,
+    includeGhanaLaw = true,
     workflowStore,
     tabularStore,
     buildCitations,
@@ -4187,7 +4189,7 @@ export async function runLLMStream(params: {
   } = params;
   const researchTools = defaultToolSources.tools(
     buildToolSourceContext(
-      includeResearchTools,
+      { includeResearchTools, includeGhanaLaw },
       availableProvidersFrom(apiKeys),
     ),
   );

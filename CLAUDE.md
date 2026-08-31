@@ -144,10 +144,24 @@ the OOXML; each edit produces an `EditAnnotation` the UI can accept/reject.
 
 `lib/toolSources/` is a registry: each source contributes tool schemas, a system-prompt fragment, an
 optional API-key provider, and a gating predicate; registration throws on duplicate ids or tool-name
-collisions. CourtListener is the only source so far. **Follow `docs/adding-api-sources.md`** when
-adding one — note that tool *dispatch* still lives inline in `chatTools.ts`, so a new source needs a
-dispatch branch there too. MCP connectors are a separate path (`lib/mcp/`, per-user servers with
-OAuth) merged into the tool list by `lib/mcpConnectors.ts`.
+collisions. Two sources: CourtListener (US case law) and `ghana-law` (Parliament of Ghana
+legislation, `lib/ghanaLaw.ts`, no API key). **Follow `docs/adding-api-sources.md`** when adding one —
+note that tool *dispatch* still lives inline in `chatTools.ts`, so a new source needs a dispatch
+branch there too. MCP connectors are a separate path (`lib/mcp/`, per-user servers with OAuth) merged
+into the tool list by `lib/mcpConnectors.ts`.
+
+Each source gates on **its own** flag (`buildToolSourceContext`), backed by a per-jurisdiction column
+(`user_profiles.legal_research_us` / `legal_research_gh`), both defaulting true. They were one boolean
+while CourtListener was alone; a single switch cannot express "Ghana yes, US no". A new source
+defaults to *on*, so paths that must stay research-free (e.g. tabular review) name every flag
+explicitly rather than relying on omission.
+
+The Ghana source is deliberately conservative about what it claims: legislation is **as enacted**
+(amendments are separate items, and the consolidated Revised Editions are scans), about a third of
+the corpus is image-only with no text layer, and searches must be scoped to the legislation
+collections *and* filtered by title — the repository indexes committee reports alongside statutes.
+`lib/pdfText.ts` classifies an extraction as text/scan/empty so a scan is reported as unreadable
+rather than empty, which is what stops the model inventing the text.
 
 ### Storage and downloads
 

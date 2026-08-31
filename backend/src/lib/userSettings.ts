@@ -12,6 +12,7 @@ export type UserModelSettings = {
     title_model: string;
     tabular_model: string;
     legal_research_us: boolean;
+    legal_research_gh: boolean;
     api_keys: UserApiKeys;
 };
 
@@ -33,7 +34,9 @@ export async function getUserModelSettings(
     const client = db ?? createServerSupabase();
     const { data } = await client
         .from("user_profiles")
-        .select("title_model, tabular_model, legal_research_us")
+        .select(
+            "title_model, tabular_model, legal_research_us, legal_research_gh",
+        )
         .eq("user_id", userId)
         .single();
     const api_keys = await getStoredUserApiKeys(userId, client);
@@ -44,6 +47,11 @@ export async function getUserModelSettings(
         legal_research_us:
             (data as { legal_research_us?: boolean | null } | null)
                 ?.legal_research_us !== false,
+        // Absent column (older database, before the Ghana migration) means
+        // enabled, matching the column default.
+        legal_research_gh:
+            (data as { legal_research_gh?: boolean | null } | null)
+                ?.legal_research_gh !== false,
         api_keys,
     };
 }
