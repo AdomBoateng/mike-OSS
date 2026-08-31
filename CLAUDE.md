@@ -18,10 +18,10 @@ browser never talks to Postgres or S3 directly; it goes through `backend` with a
 | Supabase-hosted email | SMTP (`nodemailer`) |
 | Anthropic/Gemini/OpenAI model pickers | custom OpenAI-compatible endpoint models only |
 
-`README.md`, `docs/DEPLOYMENT.md`, and `docs/self-hosting-roadmap.md` describe this fork and are
-current. **`docs/safe-local-testing.md` is still upstream text and is stale** — it tells you to
-create a Supabase project and set `NEXT_PUBLIC_SUPABASE_*`. `backend/.env.example` is the
-authoritative reference for configuration.
+Every file under `docs/`, plus `README.md`, describes this fork and is current — the upstream
+text has all been rewritten. `backend/.env.example` remains the authoritative reference for
+configuration; prefer pointing at it over restating variable lists in prose, which is how the
+docs drifted last time.
 
 ## Commands
 
