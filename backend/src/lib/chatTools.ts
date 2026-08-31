@@ -3143,8 +3143,8 @@ export async function runToolCalls(
             })),
             note:
               results.length === 0
-                ? "No matching item in the Parliament of Ghana repository. This does not mean no such law exists - coverage of subsidiary legislation is thin."
-                : "Text is as enacted. Call ghana_law_find_amendments before relying on any of these.",
+                ? "No matching item in the Parliament of Ghana repository. This search is finished - do not repeat it with reworded queries. Report that the repository has no matching item; that is not evidence no such law exists, as coverage of subsidiary legislation is thin."
+                : "You now have the item ids you need - do not search again for the same Act. Proceed to ghana_law_find_in or ghana_law_find_amendments. Text is as enacted.",
           }),
         });
       } catch (err) {
@@ -3306,8 +3306,8 @@ export async function runToolCalls(
             amendments: list,
             note:
               list.length === 0
-                ? "The repository holds no amendment item for this Act. That is not evidence the Act is unamended - say so rather than asserting the text is current."
-                : "These amendments are NOT folded into the principal Act's text. Tell the user they exist and that the provision may have changed.",
+                ? "This amendment check is complete: the repository holds no amendment item for this Act. Do not search again to confirm it. Report the result, noting it is not evidence the Act is unamended rather than asserting the text is current."
+                : "This amendment check is complete - do not search again. These amendments are NOT folded into the principal Act's text; tell the user they exist and that the provision may have changed.",
           }),
         });
       } catch (err) {

@@ -60,6 +60,13 @@ How to use it:
    and page through it with the offset it returns.
 3. ${GHANA_LAW_TOOL_NAMES.findAmendments} whenever you rely on an Act's text (see below).
 
+Search once, then move on. One ${GHANA_LAW_TOOL_NAMES.search} call with the Act's short title is
+normally enough: take the best match from those results and proceed to
+${GHANA_LAW_TOOL_NAMES.findIn} or ${GHANA_LAW_TOOL_NAMES.findAmendments}. Do not re-run the search with
+reworded queries hoping for better results — the repository is a small public
+service and repeated searching neither finds more nor is free. If the first
+search returns nothing useful, say so rather than searching again.
+
 You MUST observe these limits when answering:
 
 - The text is the Act **as enacted**, not as amended. Amendments are stored as
@@ -87,7 +94,7 @@ export const GHANA_LAW_TOOLS = [
         function: {
             name: GHANA_LAW_TOOL_NAMES.search,
             description:
-                'Search Ghanaian primary legislation by short title or subject (e.g. "Companies Act" or "data protection"). Returns matching Acts and instruments with their title, year and an item id to pass to the other ghana_law tools. Scoped to legislation only — it will not return committee reports or Hansard. Use this first when a question concerns Ghanaian statute law.',
+                'Search Ghanaian primary legislation by short title or subject (e.g. "Companies Act" or "data protection"). Returns matching Acts and instruments with their title, year and an item id to pass to the other ghana_law tools. Scoped to legislation only — it will not return committee reports or Hansard. Use this first when a question concerns Ghanaian statute law. Call it once per Act: take the best match and move on to the other tools rather than retrying with reworded queries.',
             parameters: {
                 type: "object",
                 properties: {

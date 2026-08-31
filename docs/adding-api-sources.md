@@ -1,8 +1,13 @@
 # Adding a new API tool source
 
-Mike exposes external APIs to the assistant as **tool sources**. CourtListener is
-the first one. This is the recipe for adding another (the mechanism delivered in
-Phase 2 of the self-hosting roadmap — see `self-hosting-roadmap.md`).
+Mike exposes external APIs to the assistant as **tool sources**. There are two:
+CourtListener (US case law, API-key gated) and `ghana-law` (Parliament of Ghana
+legislation, no key). This is the recipe for adding another.
+
+Read both existing sources before starting — between them they cover the two
+shapes you are likely to need. `courtlistenerSource.ts` is the minimal case;
+`ghanaLawSource.ts` shows a keyless source and, in `ghanaLaw.ts`, what it takes
+to be honest about a data source's limits.
 
 A tool source bundles: OpenAI-style tool schemas, a system-prompt fragment, an
 optional API-key provider, and a gating rule. The registry
@@ -95,3 +100,37 @@ includes it, so `ctx.availableProviders.has("myapi")` gating just works.
   (`*.integration.ts`, run via `npm run test:integration`) if it hits the network.
 
 Run `npm test` (unit) and `npx tsc --noEmit` (typecheck) before committing.
+
+## 7. Gating: give your source its own flag
+
+Sources gate on their own flag, not a shared one. `buildToolSourceContext` takes
+`ToolSourceFlags` and every flag **defaults to true**, so a newly registered
+source is on unless something turns it off:
+
+```ts
+isEnabled: (ctx) => ctx.flags.includeMyApi === true,
+```
+
+Two consequences worth knowing:
+
+- Add your flag to `ToolSourceFlags` and thread it from the user's preference
+  (a `user_profiles` column, as `legal_research_us` / `legal_research_gh` do)
+  through the chat routes into `runLLMStream`.
+- Because flags default on, any path that must stay research-free has to name
+  your flag explicitly. `routes/tabular.ts` does this — bulk extraction should
+  never acquire research tools by default. Check it when you add a source.
+
+## 8. What the model is told matters as much as the code
+
+Two lessons from building the Ghana source, both found only by running real
+queries against the real endpoint:
+
+- **The tool *result* steers behaviour more than the system prompt.** Guidance
+  in the prompt fragment barely dented a model that kept re-searching with
+  reworded queries; adding "this search is finished — do not repeat it" to the
+  returned `note` took it from five calls to two. Put next-step direction in the
+  result, where the model reads it immediately before deciding what to do.
+- **Say what a result is not.** An empty result invites a model to fall back on
+  remembered text. Distinguish "nothing found" from "found but unreadable" from
+  "found, but this does not answer the question", and say which — in the note,
+  in the event, and in the prompt.

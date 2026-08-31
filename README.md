@@ -128,9 +128,36 @@ Display names for known ids are mapped in `backend/src/lib/llm/models.ts`; an un
 still appears, labelled with its raw id. A base URL and key can also be set per account under
 **Account > Models & API Keys**, which overrides the instance-wide value.
 
-## CourtListener (optional)
+## Legal research
 
-Mike can verify citations, fetch cases, and search opinions through CourtListener. Set
+The assistant can research two jurisdictions. Each is a separate per-user toggle under
+**Account > Features > Legal Research**, both on by default, and each can be turned off without
+affecting the other.
+
+### Ghana legislation
+
+Acts, and to a lesser extent Instruments and older Decrees, from the
+[Parliament of Ghana Library Repository](https://repository.parliament.gh/). The API is open, so
+nothing needs configuring — set `GHANA_LAW_ENABLED=false` to switch it off instance-wide.
+
+Know what it is before relying on it:
+
+- Text is **as enacted**. Amendments are separate Acts and are not folded in; the consolidated
+  "Revised Edition" series is scanned images. The assistant surfaces the amendment chain and says
+  the text may have changed, but nothing here states the law in force.
+- Roughly a third of the collection is scanned with no machine-readable text, and the year does not
+  predict which. Those are reported as unreadable rather than as empty.
+- Coverage of subsidiary legislation is thin (a handful of Legislative Instruments), so a search
+  finding nothing does not mean no such law exists.
+- There is **no Ghanaian case law** source. Legislation only.
+
+Extracted text is cached in the S3 bucket under `ghana-law/items/`. A cold fetch downloads and
+extracts a PDF and can take 20 seconds, so storage being configured matters more here than
+elsewhere.
+
+### CourtListener (optional)
+
+US case law: verify citations, fetch cases, and search opinions through CourtListener. Set
 `COURTLISTENER_API_TOKEN` in `backend/.env` and restart, or let users add their own token
 under **Account > Models & API Keys**. Fresh databases already include the supporting tables.
 
