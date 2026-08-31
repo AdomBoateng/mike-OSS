@@ -43,15 +43,12 @@ import {
   type OpenAIToolSchema,
 } from "./llm";
 import { safeErrorMessage } from "./safeError";
+import { extractPdfText } from "./pdfText";
 
-const STANDARD_FONT_DATA_URL = (() => {
-  try {
-    const pkgPath = require.resolve("pdfjs-dist/package.json");
-    return path.join(path.dirname(pkgPath), "standard_fonts") + path.sep;
-  } catch {
-    return undefined;
-  }
-})();
+// Re-exported for existing callers; the implementation now lives in ./pdfText
+// so tool sources can extract PDFs without importing this module.
+export { extractPdfText } from "./pdfText";
+
 const isDev = process.env.NODE_ENV !== "production";
 const devLog = (...args: Parameters<typeof console.log>) => {
   if (isDev) console.log(...args);
@@ -833,40 +830,6 @@ export function buildMessages(
     formatted.push({ role: msg.role, content });
   }
   return formatted;
-}
-
-export async function extractPdfText(buf: ArrayBuffer): Promise<string> {
-  try {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs" as string);
-    const pdf = await (
-      pdfjsLib as unknown as {
-        getDocument: (opts: unknown) => {
-          promise: Promise<{
-            numPages: number;
-            getPage: (n: number) => Promise<{
-              getTextContent: () => Promise<{
-                items: { str?: string }[];
-              }>;
-            }>;
-          }>;
-        };
-      }
-    ).getDocument({
-      data: new Uint8Array(buf),
-      standardFontDataUrl: STANDARD_FONT_DATA_URL,
-    }).promise;
-    const parts: string[] = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      parts.push(
-        `[Page ${i}]\n${textContent.items.map((it) => it.str ?? "").join(" ")}`,
-      );
-    }
-    return parts.join("\n\n");
-  } catch {
-    return "";
-  }
 }
 
 export async function generateDocx(
