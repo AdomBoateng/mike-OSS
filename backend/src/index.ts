@@ -15,7 +15,7 @@ import { caseLawRouter } from "./routes/caseLaw";
 import { authRouter } from "./routes/auth";
 import { requireAuth } from "./middleware/auth";
 import { smtpEnabled, verifySmtp, resolveSmtpConfig } from "./lib/mailer";
-import { assertConfig } from "./lib/config";
+import { assertConfig, assertStorageReachable } from "./lib/config";
 
 // Safety net: Express 4 does not catch rejections thrown inside async route
 // handlers, and Node crashes on an unhandled rejection. Log and keep the server
@@ -35,7 +35,10 @@ const isProduction = process.env.NODE_ENV === "production";
 // Validate the environment before binding a port: in production a missing
 // secret or unreachable-by-config dependency stops the process here rather than
 // surfacing as a 500 on someone's first sign-in.
-assertConfig();
+//
+// Note this must not throw at module scope: the uncaughtException handler above
+// would catch it and the process would exit 0, reporting a clean shutdown to
+// whatever supervises it. start() below runs it and exits non-zero instead.
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -234,6 +237,31 @@ app.get("/health/smtp", requireAuth, async (_req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Mike backend running on port ${PORT}`);
+async function start(): Promise<void> {
+  assertConfig();
+  // Config only proves storage is *configured*; this proves it answers. A
+  // deployment with no route to the storage subnet fails here rather than on a
+  // user's first upload.
+  await assertStorageReachable();
+
+  // listen() reports failures by emitting "error", not by throwing, so without
+  // this a busy port would reach the uncaughtException handler above and the
+  // process would sit there having never bound anything.
+  await new Promise<void>((resolve, reject) => {
+    const server = app.listen(PORT, () => {
+      console.log(`Mike backend running on port ${PORT}`);
+      resolve();
+    });
+    server.once("error", reject);
+  });
+}
+
+// The process-level handlers above deliberately keep the server alive through
+// runtime faults, but a failed startup check is not a runtime fault — there is
+// nothing to keep alive. Exit non-zero so the supervisor sees a real failure.
+start().catch((err) => {
+  console.error(
+    `[server] startup aborted: ${err instanceof Error ? err.message : String(err)}`,
+  );
+  process.exit(1);
 });

@@ -10,7 +10,7 @@
 // a partial local setup (no S3, no SMTP) still runs.
 
 import { resolveLdapConfig } from "./ldap";
-import { resolveStorageConfig } from "./storage";
+import { probeStorage, resolveStorageConfig } from "./storage";
 import { resolveSmtpConfig } from "./mailer";
 
 /** Placeholder values shipped in .env.example; never valid in production. */
@@ -192,4 +192,116 @@ export function assertConfig(env: NodeJS.ProcessEnv = process.env): void {
       `[config] ${fatal.length} problem(s) above would stop startup with NODE_ENV=production.`,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Storage reachability
+// ---------------------------------------------------------------------------
+//
+// findConfigProblems() above is deliberately pure: it proves the env vars are
+// set, nothing more. That is not enough for storage. A deployment on a network
+// with no route to the storage subnet passes every check here, boots happily,
+// and then fails on someone's first upload. The probe below closes that gap by
+// actually talking to the endpoint before the port is bound.
+
+export type StorageProbeMode = "fatal" | "warn" | "off";
+
+/**
+ * How hard a failed probe should bite. Defaults to fatal in production and a
+ * warning elsewhere, matching how the rest of this module treats missing
+ * infrastructure. STORAGE_STARTUP_PROBE overrides it — "off" for an air-gapped
+ * or storage-less deployment, "warn" to boot anyway and fix it live.
+ */
+export function storageProbeMode(
+  env: NodeJS.ProcessEnv = process.env,
+): StorageProbeMode {
+  const raw = env.STORAGE_STARTUP_PROBE?.trim().toLowerCase();
+  if (raw === "off" || raw === "false") return "off";
+  if (raw === "warn") return "warn";
+  if (raw === "fatal") return "fatal";
+  return env.NODE_ENV === "production" ? "fatal" : "warn";
+}
+
+/** Attempts made before giving up, and the pause between them. */
+const PROBE_ATTEMPTS = 3;
+const PROBE_RETRY_DELAY_MS = 2000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Probe storage, retrying a few times.
+ *
+ * The retries are the point: a container often starts a second or two before
+ * the network around it is ready, and killing production over a blip that would
+ * have cleared on its own is worse than the problem being detected. A genuine
+ * misroute fails all three attempts and is still caught.
+ *
+ * Returns null when storage is reachable or the probe is disabled.
+ */
+export async function checkStorageReachable(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ConfigProblem | null> {
+  const mode = storageProbeMode(env);
+  if (mode === "off") return null;
+
+  // Nothing to probe; findConfigProblems() already reports it as unconfigured
+  // and would only be duplicated here.
+  if (!resolveStorageConfig()) return null;
+
+  let last = await probeStorage();
+  for (let attempt = 2; attempt <= PROBE_ATTEMPTS && !last.ok; attempt++) {
+    // Only a network fault is worth retrying. A rejected key or a missing
+    // bucket will answer identically every time.
+    if (last.kind !== "unreachable") break;
+    console.warn(
+      `[config] storage probe attempt ${attempt - 1}/${PROBE_ATTEMPTS} failed; retrying in ${
+        PROBE_RETRY_DELAY_MS / 1000
+      }s...`,
+    );
+    await sleep(PROBE_RETRY_DELAY_MS);
+    last = await probeStorage();
+  }
+
+  if (last.ok) {
+    console.log(
+      `[config] storage reachable: bucket "${last.bucket}" at ${last.endpoint} (${last.ms}ms).`,
+    );
+    return null;
+  }
+
+  const fatal = mode === "fatal";
+  if (last.kind === "unreachable") {
+    return {
+      fatal,
+      message:
+        `S3 storage at ${last.endpoint} is unreachable after ${PROBE_ATTEMPTS} attempts — ${last.detail}. ` +
+        "The credentials may be perfectly good; this looks like a routing or firewall problem between this host " +
+        "and the storage network. Document upload and download would fail for every user. " +
+        "Set STORAGE_STARTUP_PROBE=warn to start anyway.",
+    };
+  }
+  return {
+    fatal,
+    message:
+      `S3 storage at ${last.endpoint} answered, but the check failed — ${last.detail} ` +
+      "Set STORAGE_STARTUP_PROBE=warn to start anyway.",
+  };
+}
+
+/**
+ * Startup gate for storage. Logs the outcome and throws when the problem is
+ * fatal, so index.ts can exit non-zero rather than serving a deployment whose
+ * uploads are guaranteed to fail.
+ */
+export async function assertStorageReachable(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const problem = await checkStorageReachable(env);
+  if (!problem) return;
+
+  if (problem.fatal) {
+    console.error(`[config] ERROR: ${problem.message}`);
+    throw new Error(`Refusing to start: ${problem.message}`);
+  }
+  console.warn(`[config] warning: ${problem.message}`);
 }

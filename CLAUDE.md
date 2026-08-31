@@ -199,10 +199,22 @@ rename, member management). Use these helpers rather than re-implementing the jo
 `docker-compose.prod.yml` is an **overlay** applied on top of it (`-f` both, for every subsequent
 compose command) that pins CORS, drops the published Postgres port, and sets `NODE_ENV=production`.
 
-With `NODE_ENV=production` the backend runs `assertConfig()` (`lib/config.ts`) before binding a port
-and **exits** on a fatal problem — missing/placeholder/duplicated secret, no `DATABASE_URL`, no LDAP,
-no S3, no `CUSTOM_LLM_BASE_URL`. Outside production the same problems only warn. When adding a new
-required env var, add it there too, and decide deliberately whether it is fatal or a warning.
+Startup runs through `start()` in `index.ts`, which gates on two checks before binding a port and
+calls `process.exit(1)` if either fails. Neither may throw at module scope: the `uncaughtException`
+handler installed at the top of the file would swallow it and the process would exit **0**, reporting
+a clean shutdown to whatever supervises it.
+
+1. `assertConfig()` (`lib/config.ts`) — pure, env-only. With `NODE_ENV=production` a fatal problem
+   **exits**: missing/placeholder/duplicated secret, no `DATABASE_URL`, no LDAP, no S3, no
+   `CUSTOM_LLM_BASE_URL`. Outside production the same problems only warn. When adding a new required
+   env var, add it there too, and decide deliberately whether it is fatal or a warning.
+2. `assertStorageReachable()` — actually talks to S3 (`probeStorage()` in `lib/storage.ts` sends a
+   `HeadBucket`). Config alone only proves the `S3_*` vars are *set*; a host with no route to the
+   storage subnet passes every check, boots, and then fails on the first upload. The probe
+   distinguishes `unreachable` (no HTTP response — routing/firewall) from `denied` (403 — bad
+   credentials) and `no_such_bucket` (404), because those have entirely different fixes, and retries
+   3x/2s so a container that starts before its network does not die on a blip. Fatal in production,
+   a warning elsewhere; `STORAGE_STARTUP_PROBE=warn|off|fatal` overrides.
 
 Note `FRONTEND_URL` is a CORS *allowlist* (possibly `*` or comma-separated), so it is not a usable
 link target. Anything that needs an absolute URL — emails especially — must use `APP_PUBLIC_URL`.

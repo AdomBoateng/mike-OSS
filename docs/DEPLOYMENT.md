@@ -100,6 +100,41 @@ lines say exactly what is missing.
 Outside production the same problems are printed as warnings and startup
 continues, so a partial local setup still runs.
 
+### Storage reachability check
+
+The config check above only proves the `S3_*` variables are *set*. Immediately
+after it, the backend sends a `HeadBucket` to the configured endpoint, so a
+server with no network route to the storage subnet fails at boot rather than on
+someone's first document upload. A successful probe logs one line:
+
+```
+[config] storage reachable: bucket "mike" at http://10.0.0.5:7480 (48ms).
+```
+
+A failure names the cause, because the three have completely different fixes:
+
+| Log says | Meaning | Where to look |
+| --- | --- | --- |
+| `unreachable` | no HTTP response at all | routing / firewall between this host and the storage network |
+| `the endpoint answered 403` | credentials rejected, or no access to the bucket | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` |
+| `bucket "…" does not exist` | endpoint fine, bucket missing | `S3_BUCKET_NAME`, or create the bucket |
+
+A network failure is retried 3 times, 2s apart, so a container that starts a
+moment before its network is ready does not die on a blip. Unreachable storage
+is fatal in production and a warning elsewhere. To override:
+
+```bash
+STORAGE_STARTUP_PROBE=warn   # log it and start anyway
+STORAGE_STARTUP_PROBE=off    # skip the probe entirely
+```
+
+Verify the route from inside the container, which is what actually matters —
+reachability from your laptop proves nothing about the server:
+
+```bash
+docker compose exec backend node -e "require('/app/dist/lib/storage.js').probeStorage().then(r=>console.log(r))"
+```
+
 ### Pre-flight checklist
 
 - [ ] **Fresh secrets.** Generate new values for `SESSION_JWT_SECRET`,
@@ -118,6 +153,11 @@ continues, so a partial local setup still runs.
       `RESEND_API_KEY` are no longer read by any code; delete them from `.env`.
 - [ ] **Model endpoint reachable from the container.** Confirm with
       `docker compose exec backend node -e "fetch(process.env.CUSTOM_LLM_BASE_URL+'/models').then(r=>console.log(r.status))"`.
+- [ ] **Storage reachable from the container.** The startup probe enforces this,
+      but check it deliberately rather than discovering it in a restart loop —
+      see "Storage reachability check" above. Storage often sits on a different
+      subnet from LDAP and the model endpoint, so those being reachable does not
+      imply S3 is.
 - [ ] **SMTP verified.** Sign in, then `GET /health/smtp` (auth required) — it
       runs a real handshake without sending mail.
 - [ ] **Database backups.** Nothing here schedules them:

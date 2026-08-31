@@ -1,7 +1,12 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { findConfigProblems, assertConfig } from "./config";
+import {
+  findConfigProblems,
+  assertConfig,
+  storageProbeMode,
+  checkStorageReachable,
+} from "./config";
 
 // findConfigProblems takes an env argument, but the resolve*Config() helpers it
 // calls read process.env directly — so tests swap process.env wholesale and pass
@@ -216,5 +221,60 @@ describe("assertConfig", () => {
     process.env = env;
     assertConfig(env);
     assert.match(logs.join("\n"), /environment looks complete/);
+  });
+});
+
+describe("storageProbeMode", () => {
+  test("defaults to fatal in production and a warning elsewhere", () => {
+    assert.equal(storageProbeMode({ NODE_ENV: "production" }), "fatal");
+    assert.equal(storageProbeMode({ NODE_ENV: "development" }), "warn");
+    assert.equal(storageProbeMode({}), "warn");
+  });
+
+  test("an explicit setting overrides the default in both directions", () => {
+    // "off" has to work in production: an air-gapped or storage-less
+    // deployment must still be able to boot deliberately.
+    assert.equal(
+      storageProbeMode({ NODE_ENV: "production", STORAGE_STARTUP_PROBE: "off" }),
+      "off",
+    );
+    assert.equal(
+      storageProbeMode({ NODE_ENV: "production", STORAGE_STARTUP_PROBE: "warn" }),
+      "warn",
+    );
+    assert.equal(
+      storageProbeMode({ NODE_ENV: "development", STORAGE_STARTUP_PROBE: "fatal" }),
+      "fatal",
+    );
+  });
+
+  test("an unrecognised value falls back to the default rather than disabling the check", () => {
+    // Silently treating a typo as "off" would quietly remove the guard in
+    // production, which is the one place it matters.
+    assert.equal(
+      storageProbeMode({ NODE_ENV: "production", STORAGE_STARTUP_PROBE: "yes-please" }),
+      "fatal",
+    );
+  });
+});
+
+describe("checkStorageReachable", () => {
+  test("is skipped entirely when the probe is off", async () => {
+    const env = { ...goodEnv(), STORAGE_STARTUP_PROBE: "off" };
+    process.env = env;
+    // No network call, so this returns immediately even though the endpoint
+    // in goodEnv() does not exist.
+    assert.equal(await checkStorageReachable(env), null);
+  });
+
+  test("unconfigured storage is not reported twice", async () => {
+    // findConfigProblems already flags this; repeating it here would give the
+    // operator two different messages for one missing setting.
+    const env = { ...goodEnv() };
+    delete env.S3_ENDPOINT_URL;
+    delete env.S3_ACCESS_KEY_ID;
+    delete env.S3_SECRET_ACCESS_KEY;
+    process.env = env;
+    assert.equal(await checkStorageReachable(env), null);
   });
 });

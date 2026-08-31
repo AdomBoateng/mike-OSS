@@ -18,6 +18,7 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  HeadBucketCommand,
 } from "@aws-sdk/client-s3";
 import * as S3Commands from "@aws-sdk/client-s3";
 import { getSignedUrl as awsGetSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -125,6 +126,130 @@ function getClient(): S3Client {
 /** Reset the cached S3 client so the next call rebuilds it from current env. */
 export function resetStorageClient(): void {
   cachedClient = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Reachability probe
+// ---------------------------------------------------------------------------
+
+/**
+ * Why this exists: resolveStorageConfig() only proves the env vars are *set*.
+ * A deployment on a network with no route to the storage subnet passes every
+ * config check, starts cleanly, and then fails on the first upload — which is
+ * the worst possible place to discover it. probeStorage() actually talks to the
+ * endpoint so startup can refuse instead.
+ */
+export type StorageProbeResult =
+  | { ok: true; endpoint: string; bucket: string; ms: number }
+  | {
+      ok: false;
+      /**
+       * `unreachable` means no HTTP response at all — a routing or firewall
+       * problem. The others mean the endpoint answered, so the network is fine
+       * and the fault is credentials or the bucket itself. Keeping them apart
+       * matters: they have completely different fixes.
+       */
+      kind: "unconfigured" | "unreachable" | "no_such_bucket" | "denied" | "error";
+      endpoint?: string;
+      bucket?: string;
+      detail: string;
+      ms: number;
+    };
+
+/** Error codes that mean the TCP/DNS layer never got us to a server. */
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function isNetworkError(err: any): boolean {
+  const codes = [err?.code, err?.cause?.code, err?.name, err?.cause?.name];
+  if (codes.some((c) => typeof c === "string" && NETWORK_ERROR_CODES.has(c))) {
+    return true;
+  }
+  // The Smithy handler reports its own connect/socket timeouts by name, and
+  // those carry no HTTP status — the request never reached a server.
+  const name = String(err?.name ?? "");
+  if (/TimeoutError|ConnectTimeoutError/i.test(name)) return true;
+  return /timed out|timeout/i.test(String(err?.message ?? "")) &&
+    err?.$metadata?.httpStatusCode === undefined;
+}
+
+/**
+ * Check that the configured bucket is actually reachable and usable.
+ *
+ * HeadBucket is used rather than a list or a write: it is the cheapest call
+ * that exercises DNS, routing, TLS, signing and bucket existence in one go, and
+ * it leaves nothing behind in the bucket.
+ */
+export async function probeStorage(): Promise<StorageProbeResult> {
+  const started = Date.now();
+  const config = resolveStorageConfig();
+  if (!config) {
+    return {
+      ok: false,
+      kind: "unconfigured",
+      detail:
+        "S3_ENDPOINT_URL, S3_ACCESS_KEY_ID or S3_SECRET_ACCESS_KEY is not set.",
+      ms: 0,
+    };
+  }
+
+  try {
+    await getClient().send(new HeadBucketCommand({ Bucket: config.bucket }));
+    return {
+      ok: true,
+      endpoint: config.endpoint,
+      bucket: config.bucket,
+      ms: Date.now() - started,
+    };
+  } catch (err: any) {
+    const ms = Date.now() - started;
+    const base = { endpoint: config.endpoint, bucket: config.bucket, ms };
+    const status = err?.$metadata?.httpStatusCode;
+
+    if (isNetworkError(err) && status === undefined) {
+      return {
+        ...base,
+        ok: false,
+        kind: "unreachable",
+        detail: `no response from ${config.endpoint} (${
+          err?.name ?? "error"
+        }: ${err?.message ?? "unknown"})`,
+      };
+    }
+    if (status === 404 || err?.name === "NotFound" || err?.name === "NoSuchBucket") {
+      return {
+        ...base,
+        ok: false,
+        kind: "no_such_bucket",
+        detail: `the endpoint answered, but bucket "${config.bucket}" does not exist.`,
+      };
+    }
+    if (status === 401 || status === 403) {
+      return {
+        ...base,
+        ok: false,
+        kind: "denied",
+        detail: `the endpoint answered ${status}: the credentials are rejected or lack access to "${config.bucket}".`,
+      };
+    }
+    return {
+      ...base,
+      ok: false,
+      kind: "error",
+      detail: `${err?.name ?? "error"}: ${err?.message ?? "unknown"}${
+        status ? ` (HTTP ${status})` : ""
+      }`,
+    };
+  }
 }
 
 function requireStorageConfig(): void {
