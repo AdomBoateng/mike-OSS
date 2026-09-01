@@ -83,6 +83,7 @@ export function customModelName(model: string): string {
 const CUSTOM_MODEL_LABELS: Record<string, string> = {
     qwen3_6_35b: "Qwen3.6-35b",
     qwen3_8_27b: "Qwen3.8-27b",
+    qwen3_8_flash_next: "Qwen3.8-Flash-Next",
 };
 
 /** Display label for a raw endpoint model name. */

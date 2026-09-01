@@ -23,6 +23,7 @@ describe("customModelLabel", () => {
   test("maps the deployed vLLM models to their display names", () => {
     assert.equal(customModelLabel("qwen3_6_35b"), "Qwen3.6-35b");
     assert.equal(customModelLabel("qwen3_8_27b"), "Qwen3.8-27b");
+    assert.equal(customModelLabel("qwen3_8_flash_next"), "Qwen3.8-Flash-Next");
   });
 
   test("matches case-insensitively", () => {
