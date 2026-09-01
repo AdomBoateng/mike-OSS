@@ -135,6 +135,67 @@ reachability from your laptop proves nothing about the server:
 docker compose exec backend node -e "require('/app/dist/lib/storage.js').probeStorage().then(r=>console.log(r))"
 ```
 
+### Docker subnet collisions (read this before blaming the firewall)
+
+Docker allocates bridge networks from `172.17.0.0/16` through `172.31.0.0/16`
+by default. If any of those ranges contains a host the app depends on, every
+container on this machine loses the route to it — traffic goes to the local
+bridge instead of the LAN. Nothing in the app's own config looks wrong, and the
+host itself can still reach the service perfectly, which makes this easy to
+misdiagnose as a firewall problem.
+
+This is not hypothetical here: an LDAP directory on `172.18.x` and object
+storage on `172.20.x` both sit inside Docker's default pool. One unrelated
+`docker compose up` elsewhere on the server is enough to claim that range and
+break sign-in or uploads for this app.
+
+Check for a collision:
+
+```bash
+docker network ls --format '{{.Name}}' | xargs -I{} sh -c 'echo -n "{} "; docker network inspect {} --format "{{range .IPAM.Config}}{{.Subnet}}{{end}}"'
+```
+
+If any subnet listed contains your LDAP, S3, or database host, fix it at the
+daemon level so Docker never allocates in the ranges your infrastructure uses.
+In `/etc/docker/daemon.json`:
+
+```json
+{
+  "default-address-pools": [
+    { "base": "172.30.0.0/15", "size": 24 }
+  ]
+}
+```
+
+Then `systemctl restart docker` and recreate the affected networks
+(`docker compose down && docker compose up -d` per project). Pick a base range
+that your own network does not use; the example above avoids `172.17`-`172.29`,
+but check it against your estate first.
+
+Pinning this project's own network subnet does **not** fix it — the conflicting
+route belongs to whichever network claimed the range, and it applies to every
+container on the host regardless of which network they are attached to.
+
+The startup probes catch both symptoms: the backend refuses to start and names
+S3 or LDAP as unreachable rather than failing later on a user's first upload or
+sign-in.
+
+### LDAP reachability check
+
+The same probe runs against the directory: the backend binds as
+`LDAP_SEARCH_BIND_DN` before binding a port, so an unroutable directory stops
+startup instead of surfacing when the first person tries to sign in.
+
+```
+[config] LDAP reachable: ldap://10.0.0.9:389 (22ms).
+```
+
+`unreachable` means the connection never established (routing or firewall);
+`denied` means the directory answered and rejected the service account, which is
+a credentials fix. Override with `LDAP_STARTUP_PROBE=warn|off|fatal`. Both
+probes run concurrently and every failure is reported before the process exits,
+so you are not fixing one firewall rule per restart.
+
 ### Pre-flight checklist
 
 - [ ] **Fresh secrets.** Generate new values for `SESSION_JWT_SECRET`,
@@ -158,6 +219,13 @@ docker compose exec backend node -e "require('/app/dist/lib/storage.js').probeSt
       see "Storage reachability check" above. Storage often sits on a different
       subnet from LDAP and the model endpoint, so those being reachable does not
       imply S3 is.
+- [ ] **No Docker subnet collision.** See "Docker subnet collisions" above. Run
+      the check on the actual server — a host can reach every dependency while
+      its containers cannot.
+- [ ] **All four dependencies reachable from the server**, not from a laptop:
+      LDAP, S3, SMTP, and the model endpoint frequently live on different
+      subnets with different firewall rules, and reaching three of them says
+      nothing about the fourth.
 - [ ] **SMTP verified.** Sign in, then `GET /health/smtp` (auth required) — it
       runs a real handshake without sending mail.
 - [ ] **Database backups.** Nothing here schedules them:

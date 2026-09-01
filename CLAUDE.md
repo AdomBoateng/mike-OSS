@@ -208,13 +208,21 @@ a clean shutdown to whatever supervises it.
    **exits**: missing/placeholder/duplicated secret, no `DATABASE_URL`, no LDAP, no S3, no
    `CUSTOM_LLM_BASE_URL`. Outside production the same problems only warn. When adding a new required
    env var, add it there too, and decide deliberately whether it is fatal or a warning.
-2. `assertStorageReachable()` — actually talks to S3 (`probeStorage()` in `lib/storage.ts` sends a
-   `HeadBucket`). Config alone only proves the `S3_*` vars are *set*; a host with no route to the
-   storage subnet passes every check, boots, and then fails on the first upload. The probe
-   distinguishes `unreachable` (no HTTP response — routing/firewall) from `denied` (403 — bad
-   credentials) and `no_such_bucket` (404), because those have entirely different fixes, and retries
-   3x/2s so a container that starts before its network does not die on a blip. Fatal in production,
-   a warning elsewhere; `STORAGE_STARTUP_PROBE=warn|off|fatal` overrides.
+2. `assertDependenciesReachable()` — actually talks to S3 and LDAP (`probeStorage()` in
+   `lib/storage.ts` sends a `HeadBucket`; `probeLdap()` in `lib/ldap.ts` binds as the search
+   account). Config alone only proves the vars are *set*; a host with no route to the storage
+   subnet passes every check, boots, and then fails on the first upload — and an unroutable
+   directory means nobody can sign in. Each probe distinguishes `unreachable` (no response —
+   routing/firewall) from `denied` (bad credentials), because those have entirely different fixes,
+   and retries network faults 3x/2s so a container that starts before its network does not die on a
+   blip. Both run concurrently and *all* failures are reported before exiting, so you are not fixing
+   one firewall rule per restart. Fatal in production, warnings elsewhere;
+   `STORAGE_STARTUP_PROBE` / `LDAP_STARTUP_PROBE` (`warn|off|fatal`) override.
+
+   Docker's default bridge pool (`172.17`-`172.31`) overlaps both the LDAP (`172.18.x`) and storage
+   (`172.20.x`) subnets, so an unrelated compose project on the same host can silently break either
+   one for every container. Pinning this project's own subnet does not help; the fix is
+   `default-address-pools` in the daemon config. See `docs/DEPLOYMENT.md`.
 
 Note `FRONTEND_URL` is a CORS *allowlist* (possibly `*` or comma-separated), so it is not a usable
 link target. Anything that needs an absolute URL — emails especially — must use `APP_PUBLIC_URL`.

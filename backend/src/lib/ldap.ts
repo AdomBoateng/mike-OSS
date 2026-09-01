@@ -218,3 +218,123 @@ export async function ldapFindByEmail(
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Reachability probe
+// ---------------------------------------------------------------------------
+
+/**
+ * Why this exists: resolveLdapConfig() only proves the LDAP_* vars are set.
+ * If the directory is unroutable, the app starts fine and then nobody can sign
+ * in — the failure surfaces on a user's login attempt, which is the worst place
+ * to learn the firewall is wrong. Mirrors probeStorage() in storage.ts.
+ *
+ * A Docker subnet collision is the specific case that motivated this: Docker's
+ * default bridge pool covers 172.17-172.31, so a directory on 172.18.x becomes
+ * unreachable from every container the moment an unrelated compose project
+ * claims that range. Nothing about the app's own config looks wrong.
+ */
+export type LdapProbeResult =
+  | { ok: true; url: string; ms: number }
+  | {
+      ok: false;
+      /**
+       * `unreachable` means the connection never established — routing or
+       * firewall. `denied` means the directory answered and rejected the
+       * service account, which is a credentials fix instead.
+       */
+      kind: "unconfigured" | "unreachable" | "denied" | "error";
+      url?: string;
+      detail: string;
+      ms: number;
+    };
+
+const LDAP_NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EPIPE",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+]);
+
+/**
+ * Bind as the search account and disconnect.
+ *
+ * This is the cheapest call that proves the whole path works: DNS, routing,
+ * the port, and that the service credentials are accepted. It deliberately does
+ * not search — a bad base DN is a much less likely misconfiguration than an
+ * unroutable host, and searching would need a username to look for.
+ */
+export async function probeLdap(): Promise<LdapProbeResult> {
+  const started = Date.now();
+  const cfg = resolveLdapConfig();
+  if (!cfg) {
+    return {
+      ok: false,
+      kind: "unconfigured",
+      detail:
+        "LDAP_URL, LDAP_SEARCH_BIND_DN, LDAP_SEARCH_BIND_PASSWORD or LDAP_USER_BASE_DN is not set.",
+      ms: 0,
+    };
+  }
+
+  const client = new Client({
+    url: cfg.url,
+    timeout: cfg.timeoutMs,
+    connectTimeout: cfg.timeoutMs,
+  });
+  try {
+    await client.bind(cfg.searchBindDn, cfg.searchBindPassword);
+    return { ok: true, url: cfg.url, ms: Date.now() - started };
+  } catch (err: any) {
+    const ms = Date.now() - started;
+    const code = err?.code ?? err?.cause?.code;
+    const name = String(err?.name ?? "");
+
+    // LDAP result 49 is invalidCredentials — the server answered, so the
+    // network is fine and the service account is what needs fixing.
+    if (err?.code === 49 || /InvalidCredentials/i.test(name)) {
+      return {
+        ok: false,
+        kind: "denied",
+        url: cfg.url,
+        detail: `the directory rejected LDAP_SEARCH_BIND_DN "${cfg.searchBindDn}" (invalid credentials).`,
+        ms,
+      };
+    }
+    if (
+      (typeof code === "string" && LDAP_NETWORK_ERROR_CODES.has(code)) ||
+      /ConnectionError|TimeoutError/i.test(name) ||
+      /timeout|ECONN|EHOST|ENETUNREACH|getaddrinfo/i.test(
+        String(err?.message ?? ""),
+      )
+    ) {
+      return {
+        ok: false,
+        kind: "unreachable",
+        url: cfg.url,
+        detail: `no usable connection to ${cfg.url} (${name || "error"}: ${
+          err?.message ?? "unknown"
+        })`,
+        ms,
+      };
+    }
+    return {
+      ok: false,
+      kind: "error",
+      url: cfg.url,
+      detail: `${name || "error"}: ${err?.message ?? "unknown"}`,
+      ms,
+    };
+  } finally {
+    try {
+      await client.unbind();
+    } catch {
+      /* the probe already has its answer; a failed unbind adds nothing */
+    }
+  }
+}

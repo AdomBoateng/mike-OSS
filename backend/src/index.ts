@@ -15,7 +15,7 @@ import { caseLawRouter } from "./routes/caseLaw";
 import { authRouter } from "./routes/auth";
 import { requireAuth } from "./middleware/auth";
 import { smtpEnabled, verifySmtp, resolveSmtpConfig } from "./lib/mailer";
-import { assertConfig, assertStorageReachable } from "./lib/config";
+import { assertConfig, assertDependenciesReachable } from "./lib/config";
 
 // Safety net: Express 4 does not catch rejections thrown inside async route
 // handlers, and Node crashes on an unhandled rejection. Log and keep the server
@@ -239,10 +239,11 @@ app.get("/health/smtp", requireAuth, async (_req, res) => {
 
 async function start(): Promise<void> {
   assertConfig();
-  // Config only proves storage is *configured*; this proves it answers. A
-  // deployment with no route to the storage subnet fails here rather than on a
-  // user's first upload.
-  await assertStorageReachable();
+  // Config only proves S3 and LDAP are *configured*; this proves they answer.
+  // A deployment with no route to the storage subnet fails here rather than on
+  // a user's first upload, and one that cannot reach the directory fails here
+  // rather than when someone tries to sign in.
+  await assertDependenciesReachable();
 
   // listen() reports failures by emitting "error", not by throwing, so without
   // this a busy port would reach the uncaughtException handler above and the

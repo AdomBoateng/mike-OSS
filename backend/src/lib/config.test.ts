@@ -5,7 +5,9 @@ import {
   findConfigProblems,
   assertConfig,
   storageProbeMode,
+  ldapProbeMode,
   checkStorageReachable,
+  checkLdapReachable,
 } from "./config";
 
 // findConfigProblems takes an env argument, but the resolve*Config() helpers it
@@ -276,5 +278,42 @@ describe("checkStorageReachable", () => {
     delete env.S3_SECRET_ACCESS_KEY;
     process.env = env;
     assert.equal(await checkStorageReachable(env), null);
+  });
+});
+
+describe("ldapProbeMode", () => {
+  test("follows the same fatal-in-production default as storage", () => {
+    assert.equal(ldapProbeMode({ NODE_ENV: "production" }), "fatal");
+    assert.equal(ldapProbeMode({}), "warn");
+  });
+
+  test("is controlled independently of the storage probe", () => {
+    // Turning off one probe must not silently disable the other; they guard
+    // different failures and get fixed at different times.
+    const env = {
+      NODE_ENV: "production",
+      STORAGE_STARTUP_PROBE: "off",
+      LDAP_STARTUP_PROBE: "fatal",
+    };
+    assert.equal(storageProbeMode(env), "off");
+    assert.equal(ldapProbeMode(env), "fatal");
+  });
+});
+
+describe("checkLdapReachable", () => {
+  test("is skipped entirely when the probe is off", async () => {
+    const env = { ...goodEnv(), LDAP_STARTUP_PROBE: "off" };
+    process.env = env;
+    assert.equal(await checkLdapReachable(env), null);
+  });
+
+  test("unconfigured LDAP is not reported twice", async () => {
+    const env = { ...goodEnv() };
+    delete env.LDAP_URL;
+    delete env.LDAP_SEARCH_BIND_DN;
+    delete env.LDAP_SEARCH_BIND_PASSWORD;
+    delete env.LDAP_USER_BASE_DN;
+    process.env = env;
+    assert.equal(await checkLdapReachable(env), null);
   });
 });

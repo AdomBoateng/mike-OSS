@@ -9,7 +9,7 @@
 // In production a problem is fatal. In development it is printed as a warning so
 // a partial local setup (no S3, no SMTP) still runs.
 
-import { resolveLdapConfig } from "./ldap";
+import { probeLdap, resolveLdapConfig } from "./ldap";
 import { probeStorage, resolveStorageConfig } from "./storage";
 import { resolveSmtpConfig } from "./mailer";
 
@@ -209,17 +209,27 @@ export type StorageProbeMode = "fatal" | "warn" | "off";
 /**
  * How hard a failed probe should bite. Defaults to fatal in production and a
  * warning elsewhere, matching how the rest of this module treats missing
- * infrastructure. STORAGE_STARTUP_PROBE overrides it — "off" for an air-gapped
- * or storage-less deployment, "warn" to boot anyway and fix it live.
+ * infrastructure. The override exists for an air-gapped or partial deployment:
+ * "off" skips the probe, "warn" boots anyway so it can be fixed live.
  */
-export function storageProbeMode(
-  env: NodeJS.ProcessEnv = process.env,
-): StorageProbeMode {
-  const raw = env.STORAGE_STARTUP_PROBE?.trim().toLowerCase();
+function probeMode(varName: string, env: NodeJS.ProcessEnv): StorageProbeMode {
+  const raw = env[varName]?.trim().toLowerCase();
   if (raw === "off" || raw === "false") return "off";
   if (raw === "warn") return "warn";
   if (raw === "fatal") return "fatal";
   return env.NODE_ENV === "production" ? "fatal" : "warn";
+}
+
+export function storageProbeMode(
+  env: NodeJS.ProcessEnv = process.env,
+): StorageProbeMode {
+  return probeMode("STORAGE_STARTUP_PROBE", env);
+}
+
+export function ldapProbeMode(
+  env: NodeJS.ProcessEnv = process.env,
+): StorageProbeMode {
+  return probeMode("LDAP_STARTUP_PROBE", env);
 }
 
 /** Attempts made before giving up, and the pause between them. */
@@ -289,10 +299,84 @@ export async function checkStorageReachable(
 }
 
 /**
- * Startup gate for storage. Logs the outcome and throws when the problem is
- * fatal, so index.ts can exit non-zero rather than serving a deployment whose
- * uploads are guaranteed to fail.
+ * Probe the directory, retrying network faults the same way storage does.
+ *
+ * Returns null when LDAP is reachable or the probe is disabled.
  */
+export async function checkLdapReachable(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ConfigProblem | null> {
+  const mode = ldapProbeMode(env);
+  if (mode === "off") return null;
+  if (!resolveLdapConfig()) return null; // already reported by findConfigProblems
+
+  let last = await probeLdap();
+  for (let attempt = 2; attempt <= PROBE_ATTEMPTS && !last.ok; attempt++) {
+    if (last.kind !== "unreachable") break;
+    console.warn(
+      `[config] LDAP probe attempt ${attempt - 1}/${PROBE_ATTEMPTS} failed; retrying in ${
+        PROBE_RETRY_DELAY_MS / 1000
+      }s...`,
+    );
+    await sleep(PROBE_RETRY_DELAY_MS);
+    last = await probeLdap();
+  }
+
+  if (last.ok) {
+    console.log(`[config] LDAP reachable: ${last.url} (${last.ms}ms).`);
+    return null;
+  }
+
+  const fatal = mode === "fatal";
+  if (last.kind === "unreachable") {
+    return {
+      fatal,
+      message:
+        `LDAP at ${last.url} is unreachable after ${PROBE_ATTEMPTS} attempts — ${last.detail}. ` +
+        "Nobody would be able to sign in. This is a routing or firewall problem rather than a credentials one. " +
+        "If this host runs Docker, check that no bridge network overlaps the directory's subnet " +
+        "(docker network ls, then inspect each subnet). Set LDAP_STARTUP_PROBE=warn to start anyway.",
+    };
+  }
+  return {
+    fatal,
+    message:
+      `LDAP at ${last.url} answered, but the check failed — ${last.detail} ` +
+      "Set LDAP_STARTUP_PROBE=warn to start anyway.",
+  };
+}
+
+/**
+ * Startup gate for the external services the app cannot work without.
+ *
+ * Both probes run concurrently and every failure is reported before throwing:
+ * fixing one firewall rule only to rediscover the next on the following boot is
+ * exactly the loop this is meant to end.
+ */
+export async function assertDependenciesReachable(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const problems = (
+    await Promise.all([checkStorageReachable(env), checkLdapReachable(env)])
+  ).filter((p): p is ConfigProblem => p !== null);
+  if (problems.length === 0) return;
+
+  const fatal = problems.filter((p) => p.fatal);
+  for (const p of problems.filter((p) => !p.fatal)) {
+    console.warn(`[config] warning: ${p.message}`);
+  }
+  for (const p of fatal) console.error(`[config] ERROR: ${p.message}`);
+
+  if (fatal.length > 0) {
+    throw new Error(
+      `Refusing to start: ${fatal.length} unreachable ${
+        fatal.length === 1 ? "dependency" : "dependencies"
+      }. See the [config] ERROR lines above.`,
+    );
+  }
+}
+
+/** Storage-only gate, kept for callers that need just this one check. */
 export async function assertStorageReachable(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
