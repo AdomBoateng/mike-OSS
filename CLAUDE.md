@@ -156,6 +156,11 @@ while CourtListener was alone; a single switch cannot express "Ghana yes, US no"
 defaults to *on*, so paths that must stay research-free (e.g. tabular review) name every flag
 explicitly rather than relying on omission.
 
+`docs/ghana-legislation-source.md` records where the Ghana text comes from (the Parliament of
+Ghana DSpace REST API — an API integration, not scraping), the endpoints used, the sources
+deliberately rejected on terms grounds (GhaLII, Constitute), and the **unresolved** reuse-licence
+question. Consult it before extending the source.
+
 The Ghana source is deliberately conservative about what it claims: legislation is **as enacted**
 (amendments are separate items, and the consolidated Revised Editions are scans), about a third of
 the corpus is image-only with no text layer, and searches must be scoped to the legislation

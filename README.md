@@ -27,6 +27,7 @@ version, use upstream rather than this fork.
 - `docs/DEPLOYMENT.md` — Docker deployment and the production checklist
 - `docs/self-hosting-roadmap.md` — what was migrated off the managed services, and what's left
 - `docs/adding-api-sources.md` — how to add another external API as assistant tools
+- `docs/ghana-legislation-source.md` — where the Ghana legislation text comes from, how it is accessed, and its limits
 
 ## Prerequisites
 
