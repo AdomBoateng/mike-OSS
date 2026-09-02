@@ -46,7 +46,8 @@ import {
   type LlmMessage,
   type OpenAIToolSchema,
 } from "./llm";
-import { safeErrorMessage } from "./safeError";
+import { safeErrorLog, safeErrorMessage } from "./safeError";
+import { validateToolCallArguments } from "./toolArgs";
 import {
   searchLegislation,
   fetchLegislationText,
@@ -3757,7 +3758,12 @@ export async function runToolCalls(
         }
       }
     } else if (tc.function.name === "generate_docx") {
-      const title = args.title as string;
+      // Coerced rather than cast: runToolCalls is exported and reachable
+      // without the caller's schema check, and everything below assumes a
+      // string — `title.replace(...)` on an absent title is what took the
+      // whole assistant stream down. The existing `|| "document"` fallbacks
+      // cover the empty case.
+      const title = typeof args.title === "string" ? args.title : "";
       const landscape = !!args.landscape;
       devLog(
         `[generate_docx] title="${title}" landscape=${landscape} args.landscape=${args.landscape}`,
@@ -4118,12 +4124,43 @@ type AssistantEvent =
   | { type: "content"; text: string }
   | { type: "error"; message: string };
 
+/**
+ * A tool-call batch that produced nothing. Used when the whole dispatch throws,
+ * so the turn can still return a tool_result per tool_use instead of unwinding.
+ */
+function emptyToolCallBatch(): Awaited<ReturnType<typeof runToolCalls>> {
+  return {
+    toolResults: [],
+    docsRead: [],
+    docsFound: [],
+    docsCreated: [],
+    docsReplicated: [],
+    workflowsApplied: [],
+    docsEdited: [],
+    courtlistenerEvents: [],
+    ghanaLawEvents: [],
+    caseCitationEvents: [],
+    mcpEvents: [],
+  };
+}
+
 export class AssistantStreamError extends Error {
   fullText: string;
   events: AssistantEvent[];
 
-  constructor(message: string, fullText: string, events: AssistantEvent[]) {
-    super(message);
+  /**
+   * `options.cause` must be the error that actually failed. This wrapper is
+   * built at the stream boundary, so its own stack only ever points back here
+   * — without the cause, a log line says `terminated` or `Cannot read
+   * properties of undefined` and gives no way to find out where or why.
+   */
+  constructor(
+    message: string,
+    fullText: string,
+    events: AssistantEvent[],
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
     this.name = "AssistantStreamError";
     this.fullText = fullText;
     this.events = events;
@@ -4400,6 +4437,52 @@ export async function runLLMStream(params: {
             arguments: JSON.stringify(c.input),
           },
         }));
+
+        // Check arguments against each tool's own schema before dispatch.
+        // The branches in runToolCalls read arguments with unchecked casts, so
+        // a call missing a required argument throws a TypeError that would
+        // otherwise unwind the whole stream. Handing the model the problem as
+        // that call's result lets it correct itself and retry instead.
+        const rejectedArgs = new Map<string, string>();
+        const dispatchable = toolCalls.filter((tc) => {
+          const validation = validateToolCallArguments(
+            tc.function.name,
+            tc.function.arguments,
+            activeTools as OpenAIToolSchema[],
+          );
+          if (validation.ok) return true;
+          rejectedArgs.set(tc.id, validation.problem);
+          return false;
+        });
+
+        // Backstop for anything the schema check cannot predict. A tool that
+        // throws is a failed tool, not a failed conversation — the turn keeps
+        // its already-streamed text and the model gets a chance to recover.
+        let batch = emptyToolCallBatch();
+        let batchFailure: string | null = null;
+        if (dispatchable.length) {
+          try {
+            batch = await runToolCalls(
+              dispatchable,
+              docStore,
+              userId,
+              db,
+              write,
+              workflowStore,
+              tabularStore,
+              docIndex,
+              turnEditState,
+              projectId,
+              courtlistenerTurnState,
+              apiKeys,
+              model,
+            );
+          } catch (err) {
+            if (isAbortError(err)) throw err;
+            console.error("[assistant] tool dispatch failed", safeErrorLog(err));
+            batchFailure = safeErrorMessage(err, "The tool failed to run.");
+          }
+        }
         const {
           toolResults,
           docsRead,
@@ -4412,21 +4495,7 @@ export async function runLLMStream(params: {
           ghanaLawEvents,
           caseCitationEvents,
           mcpEvents,
-        } = await runToolCalls(
-          toolCalls,
-          docStore,
-          userId,
-          db,
-          write,
-          workflowStore,
-          tabularStore,
-          docIndex,
-          turnEditState,
-          projectId,
-        courtlistenerTurnState,
-        apiKeys,
-        model,
-      );
+        } = batch;
         throwIfAborted(signal);
         for (const r of docsRead) {
           events.push({
@@ -4503,14 +4572,27 @@ export async function runLLMStream(params: {
           const row = r as { tool_call_id: string; content?: unknown };
           resultByCallId.set(row.tool_call_id, String(row.content ?? ""));
         }
-        return toolCalls.map((c) => ({
-          tool_use_id: c.id,
-          content:
-            resultByCallId.get(c.id) ??
-            JSON.stringify({
-              error: `Tool '${c.function.name}' is not available.`,
+        return toolCalls.map((c) => {
+          const rejected = rejectedArgs.get(c.id);
+          if (rejected !== undefined) {
+            return {
+              tool_use_id: c.id,
+              content: JSON.stringify({ error: rejected }),
+            };
+          }
+          const result = resultByCallId.get(c.id);
+          if (result !== undefined) {
+            return { tool_use_id: c.id, content: result };
+          }
+          return {
+            tool_use_id: c.id,
+            content: JSON.stringify({
+              error: batchFailure
+                ? `Tool '${c.function.name}' failed: ${batchFailure}`
+                : `Tool '${c.function.name}' is not available.`,
             }),
-        }));
+          };
+        });
       },
     });
   } catch (err) {
@@ -4521,7 +4603,7 @@ export async function runLLMStream(params: {
     flushPartialTurn();
     const message = safeErrorMessage(err, "Stream error");
     events.push({ type: "error", message });
-    throw new AssistantStreamError(message, fullText, events);
+    throw new AssistantStreamError(message, fullText, events, { cause: err });
   }
 
   flushText();

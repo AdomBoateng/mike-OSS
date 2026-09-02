@@ -40,11 +40,31 @@ export function safeErrorMessage(
   return redactSensitiveText(message);
 }
 
-export function safeErrorLog(error: unknown): {
+export type SafeErrorEntry = {
   name: string | null;
   message: string;
   stack?: string;
-} {
+};
+
+export type SafeErrorLog = SafeErrorEntry & {
+  /**
+   * The `cause` chain, flattened outermost-first and excluding the error
+   * itself. Without this the most important errors log as a bare one-liner:
+   * undici throws `TypeError: terminated` when a response body is cut short
+   * and puts the actual fault — `SocketError: other side closed`,
+   * `ECONNRESET`, `BodyTimeoutError`, `HeadersTimeoutError` — in `cause`, and
+   * those have entirely different fixes.
+   *
+   * Flat rather than nested because `console.error` inspects objects two
+   * levels deep by default, which would print a nested chain as `[Object]`.
+   */
+  causes?: SafeErrorEntry[];
+};
+
+/** How far to follow `cause` before giving up. */
+const MAX_CAUSE_DEPTH = 5;
+
+function describeError(error: unknown): SafeErrorEntry {
   if (error instanceof Error) {
     return {
       name: error.name || null,
@@ -56,4 +76,26 @@ export function safeErrorLog(error: unknown): {
     name: null,
     message: safeErrorMessage(error),
   };
+}
+
+function causeChain(error: unknown): SafeErrorEntry[] {
+  const chain: SafeErrorEntry[] = [];
+  // A `cause` that points back up the chain would otherwise loop forever.
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (chain.length < MAX_CAUSE_DEPTH) {
+    if (!current || typeof current !== "object" || seen.has(current)) break;
+    seen.add(current);
+    const next = (current as { cause?: unknown }).cause;
+    if (next === undefined || next === null) break;
+    chain.push(describeError(next));
+    current = next;
+  }
+  return chain;
+}
+
+export function safeErrorLog(error: unknown): SafeErrorLog {
+  const entry = describeError(error);
+  const causes = causeChain(error);
+  return causes.length ? { ...entry, causes } : entry;
 }
