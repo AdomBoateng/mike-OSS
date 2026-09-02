@@ -20,6 +20,11 @@ import {
 } from "../lib/userSettings";
 import { checkProjectAccess } from "../lib/access";
 import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
+import {
+    compactIfNeeded,
+    type ChatApiMessage,
+    type CompactionOutcome,
+} from "../lib/contextCompaction";
 
 export const chatRouter = Router();
 
@@ -590,14 +595,40 @@ chatRouter.post("/", requireAuth, async (req, res) => {
         api_keys: apiKeys,
         legal_research_us: legalResearchUs,
         legal_research_gh: legalResearchGh,
+        title_model: utilityModel,
     } = await getUserModelSettings(userId, db);
-    const apiMessages = buildMessages(
+    const builtMessages = buildMessages(
         enrichedMessages,
         docAvailability,
         undefined,
         undefined,
         { includeResearchTools: legalResearchUs, includeGhanaLaw: legalResearchGh },
     );
+
+    // A long working session — read a document, redraft, revise, revise again —
+    // grows the request until the endpoint rejects it or drops the connection
+    // mid-answer. Fold the oldest turns into a summary before that happens.
+    // Compaction failing must never fail the user's request, so a summariser
+    // outage degrades to an explicit note rather than an error.
+    let compactionInfo: CompactionOutcome["compacted"] = null;
+    let apiMessages = builtMessages as ChatApiMessage[];
+    try {
+        const outcome = await compactIfNeeded({
+            messages: builtMessages as ChatApiMessage[],
+            // Summarising is a background task, like titling: it uses the
+            // utility model rather than whichever model the user picked for
+            // the conversation itself.
+            model: utilityModel,
+            apiKeys,
+        });
+        apiMessages = outcome.messages;
+        compactionInfo = outcome.compacted;
+    } catch (compactErr) {
+        console.error(
+            "[chat/stream] compaction failed, sending full history",
+            safeErrorLog(compactErr),
+        );
+    }
 
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
 
@@ -614,6 +645,28 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     res.flushHeaders();
 
     const write = (line: string) => res.write(line);
+
+    // Say so before any answer text: the user is entitled to know that the
+    // earlier part of the conversation is now a summary rather than the
+    // original wording.
+    if (compactionInfo) {
+        write(
+            `data: ${JSON.stringify({
+                type: "context_compacted",
+                summarisedMessages: compactionInfo.summarisedTurns,
+                degraded: compactionInfo.degraded,
+            })}
+
+`,
+        );
+        console.log("[chat/stream] compacted context", {
+            chatId,
+            summarisedMessages: compactionInfo.summarisedTurns,
+            tokensBefore: compactionInfo.tokensBefore,
+            tokensAfter: compactionInfo.tokensAfter,
+            degraded: compactionInfo.degraded,
+        });
+    }
     const streamAbort = new AbortController();
     let streamFinished = false;
     res.on("close", () => {

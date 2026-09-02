@@ -14,6 +14,7 @@ import {
     Download,
     File,
     FileText,
+    Info,
     Loader2,
     Scale,
 } from "lucide-react";
@@ -1974,6 +1975,25 @@ export function AssistantMessage({
                             </p>
                         )}
                     </div>
+                </div>
+            );
+        }
+        if (event.type === "context_compacted") {
+            // Deliberately visible rather than a silent optimisation: from
+            // here on the assistant is working from a summary of the earlier
+            // conversation, and an answer that leans on something said before
+            // the fold should be treated accordingly.
+            return (
+                <div
+                    key={globalIdx}
+                    className="my-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                >
+                    <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                        {event.degraded
+                            ? `This conversation got long, so ${event.summarisedMessages} earlier messages were dropped to stay within the model's limit — they could not be summarised. Re-state anything from earlier that still matters.`
+                            : `This conversation got long, so ${event.summarisedMessages} earlier messages were condensed into a summary to stay within the model's limit. The assistant is working from that summary, not the original wording.`}
+                    </span>
                 </div>
             );
         }

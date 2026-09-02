@@ -119,6 +119,18 @@ export interface EditAnnotation {
 export type AssistantEvent =
   | { type: "reasoning"; text: string; isStreaming?: boolean }
   | { type: "error"; message: string }
+  /**
+   * The earlier part of the conversation was summarised to stay inside the
+   * model's context window. Surfaced rather than silent: the assistant is now
+   * working from a summary of what was said, not the original wording, and a
+   * lawyer needs to know that before relying on an answer.
+   */
+  | {
+      type: "context_compacted";
+      summarisedMessages: number;
+      /** The summary itself failed; those messages were dropped instead. */
+      degraded?: boolean;
+    }
   | {
       type: "tool_call_start";
       name: string;
