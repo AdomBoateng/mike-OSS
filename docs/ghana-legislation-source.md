@@ -94,20 +94,43 @@ AfricanLII / Laws.Africa for a licensed feed instead.
 **Constitute Project** — `robots.txt` disallows `/*.json` and `/*?*key=*`,
 leaving only the PDF path, which was not worth a dependency for one document.
 
-## Open question: reuse terms
+## Reuse terms
 
-**The repository publishes no explicit reuse licence, and no written permission
-has been obtained.**
+There are two separate questions here, and only the first is settled.
 
-Ghana's copyright legislation exempts enactments from copyright, which is the
-ordinary basis on which statute is republished, and the repository is a public
-service of Parliament publishing its own enactments. That is the assumption this
-feature currently rests on. It is an assumption, not advice, and nobody on this
-side is qualified to give the legal opinion.
+### 1. Copyright in the text — settled
 
-Before this is relied on in a commercial or user-facing setting, get written
-confirmation from the Parliament of Ghana Library on reuse and redistribution of
-the PDFs and their extracted text. Record the answer here.
+**Copyright Act, 2005 (Act 690), section 8 — "Public benefit works"** provides
+that the rights under sections 5 and 6 do **not** vest in any person in respect
+of, among other things:
+
+- **an enactment**;
+- **a decision of a court or tribunal** established for the administration of
+  justice in the Republic;
+- a report of a Government commission of enquiry published by Government.
+
+So the text of a Ghanaian Act is not subject to copyright, which is the basis on
+which anyone may republish it. The same provision covers **judgments**, which
+matters if a case-law source is ever added — but it protects the *judgment*, not
+a law report publisher's headnotes, catchwords, summaries or editorial
+arrangement, which are that publisher's own original work.
+
+Verify against the Act itself rather than against this summary.
+
+### 2. Terms of use of this particular repository — still open
+
+**The repository publishes no reuse licence, and no written permission has been
+obtained.** Section 8 answers whether the *law* is copyrighted; it does not by
+itself answer whether this service permits the way we use it — downloading its
+PDFs in volume, extracting and caching the text, and serving excerpts to users.
+
+Nothing found so far restricts it: `robots.txt` does not cover `/server/api`,
+and no terms-of-use page was located. But silence is not permission, only
+silence.
+
+Before commercial or user-facing reliance, get written confirmation from the
+Parliament of Ghana Library on programmatic retrieval and redistribution of the
+legislation PDFs and their extracted text, and record the answer here.
 
 ## What the corpus is — and is not
 
