@@ -52,6 +52,29 @@ async function deleteDocumentAndVersionFiles(
 }
 
 // GET /single-documents
+/**
+ * Every document the user can reach, across all projects and standalone, with
+ * the provenance the documents panel filters on.
+ *
+ * Registered before the "/:documentId/..." routes so the literal path is not
+ * swallowed by a parameter match. The join lives in a SQL function because the
+ * query-builder shim supports neither joins nor embedded selects — see
+ * migrations/20260902_documents_overview_rpc.sql.
+ */
+documentsRouter.get("/overview", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = (res.locals.userEmail as string | undefined) ?? null;
+  const db = createServerSupabase();
+  const { data, error } = await db.rpc("get_documents_overview", {
+    p_user_id: userId,
+    // Shared-project membership is matched on a lowercased email, the same
+    // normalisation lib/access.ts applies.
+    p_user_email: userEmail ? userEmail.toLowerCase() : null,
+  });
+  if (error) return void res.status(500).json({ detail: error.message });
+  res.json(data ?? []);
+});
+
 documentsRouter.get("/", requireAuth, async (req, res) => {
   const userId = res.locals.userId as string;
   const db = createServerSupabase();

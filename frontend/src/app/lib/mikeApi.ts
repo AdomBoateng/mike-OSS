@@ -11,6 +11,7 @@ import type {
     ChatDetailOut,
     CitationAnnotation,
     Document,
+    DocumentOverview,
     Folder,
     Message,
     Project,
@@ -816,6 +817,15 @@ export async function uploadStandaloneDocument(
 
 export async function listStandaloneDocuments(): Promise<Document[]> {
     return apiRequest<Document[]>("/single-documents");
+}
+
+/**
+ * Every document the user can reach — their own and those in projects shared
+ * with them — across all projects, with provenance. Backs the documents panel.
+ * listStandaloneDocuments() is narrower: it returns only project-less files.
+ */
+export async function listDocumentsOverview(): Promise<DocumentOverview[]> {
+    return apiRequest<DocumentOverview[]>("/documents/overview");
 }
 
 export async function deleteDocument(documentId: string): Promise<void> {

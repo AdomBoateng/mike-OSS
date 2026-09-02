@@ -196,6 +196,10 @@ app.use("/chat", chatRouter);
 app.use("/projects", projectsRouter);
 app.use("/projects/:projectId/chat", projectChatRouter);
 app.use("/single-documents", documentsRouter);
+// Same router under a name that is not a lie for the cross-project routes:
+// "/single-documents" means project-less documents, but /documents/overview
+// spans every document the user can reach. Mirrors the /user + /users pairing.
+app.use("/documents", documentsRouter);
 app.use("/tabular-review", tabularRouter);
 app.use("/workflows", workflowsRouter);
 app.use("/user", userRouter);

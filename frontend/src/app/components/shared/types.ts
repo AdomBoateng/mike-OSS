@@ -28,6 +28,33 @@ export interface Project {
   review_count?: number;
 }
 
+/**
+ * A row of the documents panel. Deliberately not `Document`: it carries the
+ * project name and provenance the overview RPC computes, and omits the
+ * storage paths the panel has no business knowing.
+ *
+ * `origin` says who first put the document here; `assistant_edited` says
+ * whether the assistant has since produced a version. Both can be true of one
+ * document — uploaded by the user, then edited by the assistant — which is why
+ * they are separate fields rather than one status.
+ */
+export interface DocumentOverview {
+  id: string;
+  project_id: string | null;
+  project_name: string | null;
+  status: "pending" | "processing" | "ready" | "error";
+  created_at: string | null;
+  updated_at: string | null;
+  filename: string | null;
+  file_type: string | null;
+  size_bytes: number | null;
+  page_count: number | null;
+  version_count: number;
+  latest_version_number: number | null;
+  origin: "upload" | "assistant";
+  assistant_edited: boolean;
+}
+
 export interface Document {
   id: string;
   user_id?: string;
