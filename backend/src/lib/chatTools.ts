@@ -47,6 +47,7 @@ import {
   type OpenAIToolSchema,
 } from "./llm";
 import { safeErrorLog, safeErrorMessage } from "./safeError";
+import { isTransientStreamError } from "./llm/custom";
 import { validateToolCallArguments } from "./toolArgs";
 import {
   CitationStreamSplitter,
@@ -4581,7 +4582,13 @@ export async function runLLMStream(params: {
       throw new AssistantStreamAbortError(fullText, events);
     }
     flushPartialTurn();
-    const message = safeErrorMessage(err, "Stream error");
+    // A dropped connection reaches here only when the provider could not retry
+    // it — output had already been streamed, so replaying would duplicate the
+    // answer. "terminated" is undici's wording and tells the user nothing, so
+    // say what actually happened and that the partial answer above is real.
+    const message = isTransientStreamError(err)
+      ? "The model endpoint closed the connection before the response finished. Anything above this point did arrive; send the message again to continue."
+      : safeErrorMessage(err, "Stream error");
     events.push({ type: "error", message });
     throw new AssistantStreamError(message, fullText, events, { cause: err });
   }

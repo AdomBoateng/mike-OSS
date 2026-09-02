@@ -187,6 +187,54 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw abortError();
 }
 
+/**
+ * Errors that mean the endpoint dropped us rather than rejected us.
+ *
+ * vLLM closes the socket mid-stream when its engine restarts or a worker dies,
+ * which surfaces through undici as a bare `TypeError: terminated` with a
+ * `SocketError: other side closed` cause — no HTTP status, nothing wrong with
+ * the request. Retrying is the right response; retrying a 4xx is not.
+ */
+const TRANSIENT_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+export function isTransientStreamError(err: unknown): boolean {
+  // A rejection carrying an HTTP status is a considered answer, not a drop.
+  if (typeof (err as { status?: number })?.status === "number") return false;
+  const seen = new Set<unknown>();
+  let node: unknown = err;
+  while (node && !seen.has(node)) {
+    seen.add(node);
+    const e = node as { code?: string; name?: string; message?: string; cause?: unknown };
+    if (typeof e.code === "string" && TRANSIENT_CODES.has(e.code)) return true;
+    if (e.name === "SocketError") return true;
+    const message = String(e.message ?? "");
+    if (/^terminated$/i.test(message)) return true;
+    if (/fetch failed|other side closed|socket hang up|premature close/i.test(message)) {
+      return true;
+    }
+    node = e.cause;
+  }
+  return false;
+}
+
+/** Attempts made for one upstream call, and the pause between them. */
+const STREAM_RETRY_ATTEMPTS = Number(
+  process.env.CUSTOM_LLM_STREAM_RETRIES ?? "3",
+);
+const STREAM_RETRY_DELAY_MS = Number(
+  process.env.CUSTOM_LLM_STREAM_RETRY_DELAY_MS ?? "1000",
+);
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function postChatCompletion(params: {
   baseUrl: string;
   headers: Record<string, string>;
@@ -213,6 +261,38 @@ async function postChatCompletion(params: {
   }
 
   return response;
+}
+
+/**
+ * postChatCompletion with retries for a dropped connection.
+ *
+ * Safe to retry unconditionally: this resolves as soon as the response headers
+ * arrive, before any body is read, so nothing has been emitted downstream yet.
+ * An aborted request (the user pressed stop) is never retried.
+ */
+async function postChatCompletionWithRetry(
+  params: Parameters<typeof postChatCompletion>[0],
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= STREAM_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await postChatCompletion(params);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      if (!isTransientStreamError(err) || attempt === STREAM_RETRY_ATTEMPTS) {
+        throw err;
+      }
+      lastError = err;
+      console.warn(
+        `[custom-llm] request dropped (attempt ${attempt}/${STREAM_RETRY_ATTEMPTS}), retrying in ${
+          STREAM_RETRY_DELAY_MS
+        }ms:`,
+        err instanceof Error ? err.message : err,
+      );
+      await sleep(STREAM_RETRY_DELAY_MS * attempt);
+    }
+  }
+  throw lastError;
 }
 
 export async function streamCustom(
@@ -311,7 +391,18 @@ export async function streamCustom(
   try {
     for (let iter = 0; iter < maxIter; iter++) {
       throwIfAborted(params.abortSignal);
-      const response = await postChatCompletion({
+      // vLLM drops the socket mid-stream when its engine restarts, which
+      // undici reports as a bare "terminated". Re-issue the request when that
+      // happens, but ONLY while this attempt has emitted nothing: once a
+      // delta has reached the browser, a retry would replay it and the user
+      // would watch the answer write itself twice. A drop after output is
+      // still surfaced as an error rather than silently patched over.
+      let toolCalls = new ToolCallAccumulator();
+      let sawReasoning = false;
+      let assistantText = "";
+
+      for (let attempt = 1; ; attempt++) {
+      const response = await postChatCompletionWithRetry({
         baseUrl,
         headers,
         body: {
@@ -327,11 +418,13 @@ export async function streamCustom(
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      const toolCalls = new ToolCallAccumulator();
+      toolCalls = new ToolCallAccumulator();
       let buffer = "";
-      let sawReasoning = false;
-      let assistantText = "";
+      sawReasoning = false;
+      assistantText = "";
+      let emitted = false;
 
+      try {
       while (true) {
         throwIfAborted(params.abortSignal);
         const { done, value } = await reader.read();
@@ -371,19 +464,41 @@ export async function streamCustom(
           const reasoning = delta.reasoning ?? delta.reasoning_content;
           if (typeof reasoning === "string" && reasoning) {
             sawReasoning = true;
+            emitted = true;
             callbacks.onReasoningDelta?.(reasoning);
           }
 
           if (typeof delta.content === "string" && delta.content) {
             fullText += delta.content;
             assistantText += delta.content;
+            emitted = true;
             callbacks.onContentDelta?.(delta.content);
           }
 
           if (delta.tool_calls?.length) {
+            emitted = true;
             toolCalls.add(delta.tool_calls);
           }
         }
+      }
+      break;
+      } catch (err) {
+        // fullText only grows alongside assistantText, so an attempt that
+        // emitted nothing has left no trace to roll back.
+        if (
+          params.abortSignal?.aborted ||
+          emitted ||
+          !isTransientStreamError(err) ||
+          attempt >= STREAM_RETRY_ATTEMPTS
+        ) {
+          throw err;
+        }
+        console.warn(
+          `[custom-llm] stream dropped before any output (attempt ${attempt}/${STREAM_RETRY_ATTEMPTS}), retrying:`,
+          err instanceof Error ? err.message : err,
+        );
+        await sleep(STREAM_RETRY_DELAY_MS * attempt);
+      }
       }
 
       if (sawReasoning) callbacks.onReasoningBlockEnd?.();
