@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useSyncExternalStore } from "react";
 import { MoreHorizontal, Pencil, Trash2, Check, X } from "lucide-react";
 import {
     DropdownMenu,
@@ -10,6 +10,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 import { useAuth } from "@/contexts/AuthContext";
+import {
+    streamingChatIds,
+    subscribeToRoster,
+} from "@/app/hooks/activeStreams";
+
+/** Stable empty snapshot for the server render — a new [] would loop React. */
+const EMPTY_IDS: string[] = [];
 import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import type { Chat } from "@/app/components/shared/types";
 import { cn } from "@/lib/utils";
@@ -94,6 +101,14 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
     const startedFull = formatFull(chat.created_at);
     const editedFull = formatFull(editedIso);
     const titleText = chat.title ?? "Untitled chat";
+    // Driven by the live stream registry, so the dot appears on whichever chat
+    // is generating — including ones the user has navigated away from.
+    const streamingIds = useSyncExternalStore(
+        subscribeToRoster,
+        streamingChatIds,
+        () => EMPTY_IDS,
+    );
+    const generating = streamingIds.includes(chat.id);
     const hoverTitle =
         `${projectName ? `${projectName}: ` : ""}${titleText}` +
         `${startedFull ? `\nStarted ${startedFull}` : ""}` +
@@ -141,13 +156,29 @@ export function SidebarChatItem({ chat, isActive, onSelect, projectName }: Props
                         }`}
                         title={hoverTitle}
                     >
-                        <span className="w-full truncate text-xs">
-                            {projectName && (
-                                <span className="text-gray-400 font-normal">
-                                    {projectName}:{" "}
+                        <span className="flex w-full items-center gap-1.5 text-xs">
+                            {/* A chat still generating in the background. The
+                                answer is being written whether or not this is
+                                the open chat, so say so here rather than
+                                letting it look finished. */}
+                            {generating && (
+                                <span
+                                    className="relative flex h-1.5 w-1.5 shrink-0"
+                                    title="Still generating"
+                                    aria-label="Still generating"
+                                >
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-500 opacity-75" />
+                                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-600" />
                                 </span>
                             )}
-                            {titleText}
+                            <span className="min-w-0 flex-1 truncate">
+                                {projectName && (
+                                    <span className="text-gray-400 font-normal">
+                                        {projectName}:{" "}
+                                    </span>
+                                )}
+                                {titleText}
+                            </span>
                         </span>
                         {editedLabel && (
                             <span className="w-full truncate text-[10px] leading-none text-gray-400">

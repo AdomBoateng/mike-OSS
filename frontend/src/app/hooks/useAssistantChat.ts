@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import {
   streamChat,
@@ -75,6 +75,17 @@ function parseCourtlistenerCaseSearches(value: unknown) {
     .filter((item): item is NonNullable<typeof item> => !!item);
 }
 
+import {
+  abortStream,
+  clearStream,
+  endStream,
+  getStreamEvents,
+  isStreaming,
+  publishStreamEvents,
+  startStream,
+  subscribeToStream,
+} from "./activeStreams";
+
 export function useAssistantChat({
   initialMessages = [],
   chatId: initialChatId,
@@ -96,6 +107,15 @@ export function useAssistantChat({
   const [chatId, setChatId] = useState<string | undefined>(initialChatId);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  /**
+   * The chat this instance is streaming into. A ref, not the state value: the
+   * publishing below runs from the streaming loop, which after an unmount is
+   * closed over whatever `chatId` was at its last render.
+   */
+  const streamingChatIdRef = useRef<string | null>(null);
+  /** True once this instance has claimed the stream for the current chat. */
+  const ownsCurrentStream =
+    !!chatId && streamingChatIdRef.current === chatId;
 
   const eventsRef = useRef<AssistantEvent[]>([]);
 
@@ -111,6 +131,12 @@ export function useAssistantChat({
 
   const writeEventsToLastAssistant = () => {
     const snapshot = [...eventsRef.current];
+    // Mirror to the registry from here rather than from an effect. This runs
+    // inside the streaming loop, so it keeps publishing after this page is
+    // unmounted — which is exactly when another page needs to read it.
+    if (streamingChatIdRef.current) {
+      publishStreamEvents(streamingChatIdRef.current, snapshot);
+    }
     setMessages((prev) => {
       const updated = [...prev];
       const last = updated[updated.length - 1];
@@ -220,6 +246,13 @@ export function useAssistantChat({
   };
 
   const cancel = () => {
+    if (!abortControllerRef.current && chatId && isStreaming(chatId)) {
+      // Adopted stream: the controller belongs to the (unmounted) page that
+      // started it, so route the stop through the registry rather than
+      // silently doing nothing.
+      abortStream(chatId);
+      return;
+    }
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       if (flushRafRef.current != null) {
@@ -331,6 +364,13 @@ export function useAssistantChat({
   ): Promise<string | null> => {
     if (!message.content.trim()) return null;
 
+    // Register immediately for an existing chat; a brand-new one registers when
+    // its id arrives in the first SSE frame.
+    if (chatId) {
+      clearStream(chatId);
+      streamingChatIdRef.current = chatId;
+      startStream(chatId, () => abortControllerRef.current?.abort());
+    }
     setIsResponseLoading(true);
 
     const lastMessage = messages[messages.length - 1];
@@ -433,6 +473,12 @@ export function useAssistantChat({
 
             if (data.type === "chat_id") {
               streamedChatId = data.chatId;
+              if (streamingChatIdRef.current !== data.chatId) {
+                streamingChatIdRef.current = data.chatId;
+                startStream(data.chatId, () =>
+                  abortControllerRef.current?.abort(),
+                );
+              }
               setChatId(data.chatId);
               setCurrentChatId(data.chatId);
               continue;
@@ -1262,6 +1308,13 @@ export function useAssistantChat({
       if (abortControllerRef.current === controller) {
         abortControllerRef.current = null;
       }
+      // Always release: the finally runs from the loop, so it fires even when
+      // the page that started this turn is long gone. Without it a closed tab
+      // would leave the sidebar pulsing forever.
+      if (streamingChatIdRef.current) {
+        endStream(streamingChatIdRef.current);
+        streamingChatIdRef.current = null;
+      }
     }
   };
 
@@ -1283,9 +1336,40 @@ export function useAssistantChat({
     return newChatId;
   };
 
+  // Adopt a stream this instance did not start — the user came back to a chat
+  // that is still generating. useSyncExternalStore rather than an effect: the
+  // registry is an external store, and this keeps the live buffer out of local
+  // state entirely, so there is nothing to fall out of sync.
+  const subscribeHere = useCallback(
+    (onChange: () => void) => subscribeToStream(chatId, onChange),
+    [chatId],
+  );
+  const liveEvents = useSyncExternalStore(
+    subscribeHere,
+    () => getStreamEvents(chatId),
+    () => null,
+  );
+  const adopted = !ownsCurrentStream && liveEvents ? liveEvents : null;
+  const chatIsStreaming = isStreaming(chatId);
+
+  // Splice the live buffer in at render time. The owner already has these
+  // events in its own messages, so only a visiting page substitutes.
+  const visibleMessages = adopted
+    ? (() => {
+        const out = [...messages];
+        const last = out[out.length - 1];
+        if (last?.role === "assistant") {
+          out[out.length - 1] = { ...last, events: adopted };
+        } else {
+          out.push({ role: "assistant", content: "", events: adopted });
+        }
+        return out;
+      })()
+    : messages;
+
   return {
-    messages,
-    isResponseLoading,
+    messages: visibleMessages,
+    isResponseLoading: isResponseLoading || (!!adopted && chatIsStreaming),
     setIsResponseLoading,
     isLoadingCitations,
     handleChat,
