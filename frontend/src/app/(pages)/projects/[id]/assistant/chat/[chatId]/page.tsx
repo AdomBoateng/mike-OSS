@@ -275,6 +275,16 @@ export default function ProjectAssistantChatPage({ params }: Props) {
             .catch(() => {});
     }, [projectId]);
 
+    // The user's own turns, oldest first, for Up-arrow recall in the composer.
+    const userMessageHistory = useMemo(
+        () =>
+            messages
+                .filter((m) => m.role === "user")
+                .map((m) => (typeof m.content === "string" ? m.content : ""))
+                .filter((text) => text.length > 0),
+        [messages],
+    );
+
     // Whenever the assistant mutates project documents — creating a new
     // doc, creating a new version via edit_document, or replicating a doc —
     // refresh the project so the explorer picks up the new/changed files
@@ -1237,6 +1247,7 @@ export default function ProjectAssistantChatPage({ params }: Props) {
                             onSubmit={handleSubmit}
                             onCancel={cancel}
                             isLoading={isResponseLoading}
+                            history={userMessageHistory}
                             hideAddDocButton
                             projectName={project?.name}
                             projectCmNumber={project?.cm_number}

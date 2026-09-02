@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useRef, useEffect } from "react";
+import { useCallback, useMemo, useState, useRef, useEffect } from "react";
 import { flushSync } from "react-dom";
 import { ArrowDown } from "lucide-react";
 import { UserMessage } from "./UserMessage";
@@ -447,6 +447,16 @@ export function ChatView({
         [patchTab],
     );
 
+    // The user's own turns, oldest first, for Up-arrow recall in the composer.
+    const userMessageHistory = useMemo(
+        () =>
+            messages
+                .filter((m) => m.role === "user")
+                .map((m) => (typeof m.content === "string" ? m.content : ""))
+                .filter((text) => text.length > 0),
+        [messages],
+    );
+
     const messagesContainerRef = useRef<HTMLDivElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const latestUserMessageRef = useRef<HTMLDivElement>(null);
@@ -758,6 +768,7 @@ export function ChatView({
                                 onSubmit={handleChat}
                                 onCancel={cancel}
                                 isLoading={isResponseLoading}
+                                history={userMessageHistory}
                             />
                             <div className="py-3 text-center">
                                 <p className="text-xs text-gray-500">

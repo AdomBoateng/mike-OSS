@@ -60,6 +60,11 @@ interface Props {
     onSubmit: (message: Message) => void;
     onCancel: () => void;
     isLoading: boolean;
+    /**
+     * The user's own past messages in this chat, oldest first, for Up-arrow
+     * recall. Omitted on a brand-new chat, where there is nothing to recall.
+     */
+    history?: string[];
     hideAddDocButton?: boolean;
     hideWorkflowButton?: boolean;
     onProjectsClick?: () => void;
@@ -72,6 +77,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         onSubmit,
         onCancel,
         isLoading,
+        history,
         hideAddDocButton,
         hideWorkflowButton,
         onProjectsClick,
@@ -92,6 +98,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
     const customConfigured = profile?.customLlmConfigured ?? false;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const controlsRef = useRef<HTMLDivElement>(null);
+    // Shell-style history recall. `historyIndex` is a position in `history`, or
+    // null when the composer is showing the user's own draft rather than a
+    // recalled message. The draft is stashed on the first Up so walking back
+    // and forward again returns what they had actually typed.
+    const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+    const draftRef = useRef("");
     const [compactControls, setCompactControls] = useState(false);
     const [docSelectorOpen, setDocSelectorOpen] = useState(false);
     const [workflowModalOpen, setWorkflowModalOpen] = useState(false);
@@ -209,9 +221,26 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
 
     const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         setValue(e.target.value);
+        // Editing makes it their text, not a recalled message: drop out of
+        // history so the next Up starts again from the most recent message.
+        setHistoryIndex(null);
         const el = e.target;
         el.style.height = "auto";
         el.style.height = `${el.scrollHeight}px`;
+    };
+
+    /** Put a recalled message in the composer, resized, caret at the end. */
+    const applyRecalled = (text: string) => {
+        setValue(text);
+        const el = textareaRef.current;
+        if (!el) return;
+        // The caret has to move after React has painted the new value,
+        // otherwise setSelectionRange applies to the old text.
+        requestAnimationFrame(() => {
+            el.style.height = "auto";
+            el.style.height = `${el.scrollHeight}px`;
+            el.setSelectionRange(text.length, text.length);
+        });
     };
 
     const handleSubmit = () => {
@@ -225,6 +254,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
             return;
         }
         setValue("");
+        setHistoryIndex(null);
+        draftRef.current = "";
         if (textareaRef.current) {
             textareaRef.current.style.height = "auto";
         }
@@ -258,6 +289,50 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
         if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             handleSubmit();
+            return;
+        }
+
+        const past = history ?? [];
+        const el = e.currentTarget;
+        const caret = el.selectionStart;
+        const collapsed = caret === el.selectionEnd;
+
+        // Up recalls the previous message. Entering history requires the caret
+        // at the very start, so Up still moves the cursor inside a multi-line
+        // draft; but once recalling, repeated Up keeps walking back the way a
+        // shell does — the caret sits at the end of the recalled text, so
+        // requiring position 0 again would strand the user after one step.
+        // Typing resets historyIndex, which hands Up back to the cursor.
+        const browsing = historyIndex !== null;
+        if (
+            e.key === "ArrowUp" &&
+            past.length > 0 &&
+            collapsed &&
+            (browsing || caret === 0)
+        ) {
+            e.preventDefault();
+            if (historyIndex === null) draftRef.current = value;
+            const next =
+                historyIndex === null
+                    ? past.length - 1
+                    : Math.max(0, historyIndex - 1);
+            setHistoryIndex(next);
+            applyRecalled(past[next]);
+            return;
+        }
+
+        // Down walks back towards the present, and past the newest message
+        // restores whatever draft the recall interrupted.
+        if (e.key === "ArrowDown" && browsing && collapsed) {
+            e.preventDefault();
+            if (historyIndex >= past.length - 1) {
+                setHistoryIndex(null);
+                applyRecalled(draftRef.current);
+            } else {
+                const next = historyIndex + 1;
+                setHistoryIndex(next);
+                applyRecalled(past[next]);
+            }
         }
     };
 
