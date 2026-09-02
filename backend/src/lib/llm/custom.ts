@@ -15,6 +15,7 @@ import type {
   UserApiKeys,
 } from "./types";
 import { customModelName } from "./models";
+import { Agent, fetch as undiciFetch } from "undici";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
 
 const MAX_OUTPUT_TOKENS = 16384;
@@ -188,6 +189,42 @@ function throwIfAborted(signal?: AbortSignal) {
 }
 
 /**
+ * Dispatcher for streaming completions.
+ *
+ * Node's fetch inherits undici's defaults, including a 300s body timeout that
+ * fires when no chunk arrives for five minutes. That is a reasonable guard for
+ * an ordinary API call and completely wrong for this one: a long generation —
+ * redrafting a full lease, say — can stall well past five minutes while the
+ * model is still working, and undici then kills a connection that was alive.
+ * One observed failure ran 8m31s and produced 43KB of events before being cut
+ * off mid-sentence.
+ *
+ * So the inactivity timeout is raised rather than left at the default. It is
+ * not disabled outright: a genuinely dead connection should still fail rather
+ * than hang a request forever, and the caller's AbortSignal remains the way a
+ * user cancels.
+ */
+let streamDispatcher: { key: string; agent: Agent } | undefined;
+
+function getStreamDispatcher(): Agent {
+  // Read lazily and re-key on the values, matching how the rest of this
+  // codebase resolves config: an env change takes effect without a re-import,
+  // and tests do not have to defeat module caching.
+  const bodyTimeout = Number(process.env.CUSTOM_LLM_BODY_TIMEOUT_MS ?? "1800000");
+  const headersTimeout = Number(
+    process.env.CUSTOM_LLM_HEADERS_TIMEOUT_MS ?? "120000",
+  );
+  const key = `${bodyTimeout}:${headersTimeout}`;
+  if (streamDispatcher?.key !== key) {
+    streamDispatcher = {
+      key,
+      agent: new Agent({ bodyTimeout, headersTimeout }),
+    };
+  }
+  return streamDispatcher.agent;
+}
+
+/**
  * Errors that mean the endpoint dropped us rather than rejected us.
  *
  * vLLM closes the socket mid-stream when its engine restarts or a worker dies,
@@ -203,6 +240,8 @@ const TRANSIENT_CODES = new Set([
   "EAI_AGAIN",
   "UND_ERR_SOCKET",
   "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
 ]);
 
 export function isTransientStreamError(err: unknown): boolean {
@@ -241,7 +280,12 @@ async function postChatCompletion(params: {
   body: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<Response> {
-  const response = await fetch(`${params.baseUrl}/chat/completions`, {
+  // undici's own fetch, not the global one: a dispatcher only applies when the
+  // Agent and the fetch come from the same undici instance, and Node's global
+  // fetch is backed by its own bundled copy. Passing this Agent to global
+  // fetch silently fails the request instead of configuring it.
+  const streaming = params.body.stream === true;
+  const response = (await undiciFetch(`${params.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -249,7 +293,10 @@ async function postChatCompletion(params: {
     },
     body: JSON.stringify(params.body),
     signal: params.signal,
-  });
+    // Only streaming calls need the longer inactivity window; a non-streaming
+    // completion that goes quiet for minutes really is stuck.
+    ...(streaming ? { dispatcher: getStreamDispatcher() } : {}),
+  })) as unknown as Response;
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
