@@ -4,8 +4,6 @@ import { requireAuth, requireMfaIfEnrolled } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import { deleteAuthUser } from "../lib/authUsers";
 import {
-    DEFAULT_TABULAR_MODEL,
-    DEFAULT_TITLE_MODEL,
     CLAUDE_LOW_MODELS,
     OPENAI_LOW_MODELS,
     resolveModel,
@@ -49,6 +47,7 @@ import {
     userExportFilename,
 } from "../lib/userDataExport";
 import { signSession } from "../lib/session";
+import { resolveUtilityModel } from "../lib/userSettings";
 import {
     deleteFactor,
     getFactor,
@@ -299,15 +298,30 @@ function serializeProfile(
     row: UserProfileRow,
     apiKeyStatus?: ApiKeyStatus,
     customLlm?: { url: string | null; source: ApiKeySource },
+    utilityModel?: string | null,
 ) {
     const creditsUsed = row.message_credits_used ?? 0;
-    const titleFallback = apiKeyStatus?.gemini
-        ? DEFAULT_TITLE_MODEL
-        : apiKeyStatus?.openai
-          ? OPENAI_LOW_MODELS[0]
-          : apiKeyStatus?.claude
-            ? CLAUDE_LOW_MODELS[0]
-            : DEFAULT_TITLE_MODEL;
+    // No Gemini fallback: this fork serves custom-endpoint models only, and
+    // defaulting to a provider the deployment has no key for produced a
+    // title_model that could never run. `utilityModel` is the endpoint's own
+    // model; the cloud branches remain only for a deployment still holding
+    // one of those keys.
+    const storedIfUsable = (id: string | null | undefined) => {
+        const v = id?.trim();
+        if (!v) return undefined;
+        if (v.startsWith("custom/")) return v;
+        if (v.startsWith("gemini")) return apiKeyStatus?.gemini ? v : undefined;
+        if (v.startsWith("gpt-")) return apiKeyStatus?.openai ? v : undefined;
+        if (v.startsWith("claude")) return apiKeyStatus?.claude ? v : undefined;
+        return undefined;
+    };
+    const titleFallback =
+        utilityModel ??
+        (apiKeyStatus?.openai
+            ? OPENAI_LOW_MODELS[0]
+            : apiKeyStatus?.claude
+              ? CLAUDE_LOW_MODELS[0]
+              : null);
     return {
         displayName: row.display_name,
         organisation: row.organisation,
@@ -315,8 +329,17 @@ function serializeProfile(
         creditsResetDate: row.credits_reset_date,
         creditsRemaining: Math.max(MONTHLY_CREDIT_LIMIT - creditsUsed, 0),
         tier: row.tier || "Free",
-        titleModel: resolveModel(row.title_model, titleFallback),
-        tabularModel: resolveModel(row.tabular_model, DEFAULT_TABULAR_MODEL),
+        // A stored cloud id is only echoed back when a key for it exists;
+        // otherwise the profile would advertise a model this deployment
+        // cannot run. See usableStoredModel in lib/userSettings.ts.
+        titleModel: resolveModel(
+            storedIfUsable(row.title_model),
+            titleFallback ?? "",
+        ),
+        tabularModel: resolveModel(
+            storedIfUsable(row.tabular_model),
+            titleFallback ?? "",
+        ),
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
         legalResearchGh: row.legal_research_gh !== false,
@@ -517,7 +540,12 @@ async function loadProfile(
     }
 
     return {
-        data: serializeProfile(row, options.apiKeyStatus, options.customLlm),
+        data: serializeProfile(
+            row,
+            options.apiKeyStatus,
+            options.customLlm,
+            await resolveUtilityModel(await getUserApiKeys(userId, db)),
+        ),
         error: null,
     };
 }

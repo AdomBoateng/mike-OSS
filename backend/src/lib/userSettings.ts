@@ -1,8 +1,7 @@
 import { createServerSupabase } from "./supabase";
 import {
     resolveModel,
-    DEFAULT_TITLE_MODEL,
-    DEFAULT_TABULAR_MODEL,
+    isCustomModel,
     OPENAI_LOW_MODELS,
     listCustomModels,
     toCustomModelId,
@@ -19,37 +18,79 @@ export type UserModelSettings = {
 };
 
 /**
- * Title generation is a lightweight task, routed to the cheapest model
- * available: a custom endpoint model where one is configured, else the
- * cheapest model of whichever cloud provider the user still has a key for.
+ * The model used for the app's own background tasks — chat titles and tabular
+ * review — as opposed to the one the user picked for a conversation.
  *
- * The custom branch is first because this fork serves custom-endpoint models
- * only. Without it every title generation failed with "Gemini API key is not
- * configured" and silently fell back to a title sliced from the user's own
- * message — working, but never actually model-generated.
+ * This fork serves custom-endpoint models ONLY, so the custom endpoint is the
+ * answer whenever it is configured. The cloud branches survive purely for a
+ * deployment that still holds one of those keys; nothing in the UI offers
+ * those models any more.
  *
  * The endpoint is asked which models it has rather than assuming an id: the
- * custom list is dynamic, and a hard-coded guess would break the moment the
- * deployment changed. A failure here is not fatal — the caller keeps its
- * message-derived fallback — so the lookup stays best-effort.
+ * list is dynamic and a hard-coded guess breaks the next time the deployment
+ * changes. The answer is cached because this is on the profile-read path, and
+ * re-listing the endpoint for every profile load would be wasteful.
+ *
+ * Returns null when nothing is available, which callers treat as "no title
+ * model" rather than falling back to a provider the deployment cannot reach.
  */
-async function resolveTitleModel(apiKeys: UserApiKeys): Promise<string> {
+/**
+ * Honour a stored utility-model preference only if the deployment can actually
+ * run it.
+ *
+ * Profiles created before the cutover still hold cloud model ids such as
+ * "gemini-3-flash-preview". Passing one straight through means every tabular
+ * run or title generation fails on a missing key — the id is *valid*, it is
+ * just unreachable here. A custom id is always honoured; a cloud id only when
+ * a key for that provider exists.
+ */
+function usableStoredModel(
+    stored: string | null | undefined,
+    apiKeys: UserApiKeys,
+): string | undefined {
+    const id = stored?.trim();
+    if (!id) return undefined;
+    if (isCustomModel(id)) return id;
+    if (id.startsWith("gemini")) return apiKeys.gemini?.trim() ? id : undefined;
+    if (id.startsWith("gpt-")) return apiKeys.openai?.trim() ? id : undefined;
+    if (id.startsWith("claude")) return apiKeys.claude?.trim() ? id : undefined;
+    return undefined;
+}
+
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedUtilityModel: { value: string | null; at: number } | null = null;
+
+export async function resolveUtilityModel(
+    apiKeys: UserApiKeys,
+): Promise<string | null> {
     const customConfigured =
         !!apiKeys.customBaseUrl?.trim() ||
         !!process.env.CUSTOM_LLM_BASE_URL?.trim();
     if (customConfigured) {
+        const fresh =
+            cachedUtilityModel &&
+            Date.now() - cachedUtilityModel.at < MODEL_CACHE_TTL_MS;
+        if (fresh && cachedUtilityModel!.value) return cachedUtilityModel!.value;
         try {
             const models = await listCustomModels(apiKeys);
-            if (models.length > 0) return toCustomModelId(models[0].name);
+            if (models.length > 0) {
+                const id = toCustomModelId(models[0].name);
+                cachedUtilityModel = { value: id, at: Date.now() };
+                return id;
+            }
         } catch {
-            // Endpoint unreachable or listing refused: fall through to the
-            // cloud providers rather than failing the settings lookup.
+            // Endpoint unreachable or listing refused. Fall through; the
+            // caller keeps whatever fallback it already had.
         }
     }
-    if (apiKeys.gemini?.trim()) return DEFAULT_TITLE_MODEL;
     if (apiKeys.openai?.trim()) return OPENAI_LOW_MODELS[0];
     if (apiKeys.claude?.trim()) return "claude-haiku-4-5";
-    return DEFAULT_TITLE_MODEL;
+    return null;
+}
+
+/** Test seam — clears the memoised custom-model lookup. */
+export function resetUtilityModelCache(): void {
+    cachedUtilityModel = null;
 }
 
 export async function getUserModelSettings(
@@ -65,13 +106,17 @@ export async function getUserModelSettings(
         .eq("user_id", userId)
         .single();
     const api_keys = await getStoredUserApiKeys(userId, client);
+    const utilityModel = await resolveUtilityModel(api_keys);
 
     return {
         title_model: resolveModel(
-            data?.title_model,
-            await resolveTitleModel(api_keys),
+            usableStoredModel(data?.title_model, api_keys),
+            utilityModel ?? "",
         ),
-        tabular_model: resolveModel(data?.tabular_model, DEFAULT_TABULAR_MODEL),
+        tabular_model: resolveModel(
+            usableStoredModel(data?.tabular_model, api_keys),
+            utilityModel ?? "",
+        ),
         legal_research_us:
             (data as { legal_research_us?: boolean | null } | null)
                 ?.legal_research_us !== false,
