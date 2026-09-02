@@ -27,6 +27,10 @@ import {
 } from "../lib/llm";
 import { getUserModelSettings } from "../lib/userSettings";
 import {
+    compactWithNotice,
+    type ChatApiMessage,
+} from "../lib/contextCompaction";
+import {
     checkProjectAccess,
     ensureReviewAccess,
     filterAccessibleDocumentIds,
@@ -1303,11 +1307,22 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
         });
     }
 
-    const apiMessages = buildTabularMessages(
+    const builtMessages = buildTabularMessages(
         messages,
         tabularStore,
         review.title || "Untitled Review",
     );
+
+    // A review chat carries the extracted table plus every turn about it, so it
+    // reaches the window the same way the other chats do. See
+    // lib/contextCompaction.ts.
+    const { messages: apiMessages, notice: compactionNotice } =
+        await compactWithNotice({
+            messages: builtMessages as ChatApiMessage[],
+            model: tabular_model,
+            apiKeys: api_keys,
+            logContext: { route: "tabular", chatId },
+        });
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -1324,6 +1339,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
     if (chatId) {
         write(`data: ${JSON.stringify({ type: "chat_id", chatId })}\n\n`);
     }
+    if (compactionNotice) write(compactionNotice);
 
     try {
         const { fullText, events } = await runLLMStream({

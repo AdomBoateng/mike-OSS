@@ -198,3 +198,52 @@ export async function compactIfNeeded(params: {
     },
   };
 }
+
+/**
+ * Compaction as the streaming routes need it: never throws, and hands back the
+ * SSE frame to announce it.
+ *
+ * The three chat routes (assistant, project, tabular) all assemble a message
+ * array and then stream, so they share this rather than each repeating the
+ * try/catch and the frame. A failure here logs and returns the original
+ * messages: a request that would merely have been long must not become a
+ * request that fails.
+ */
+export async function compactWithNotice(params: {
+  messages: ChatApiMessage[];
+  model: string;
+  apiKeys?: UserApiKeys;
+  /** Included in the server-side log line, e.g. { chatId }. */
+  logContext?: Record<string, unknown>;
+}): Promise<{ messages: ChatApiMessage[]; notice: string | null }> {
+  try {
+    const outcome = await compactIfNeeded({
+      messages: params.messages,
+      model: params.model,
+      apiKeys: params.apiKeys,
+    });
+    if (!outcome.compacted) return { messages: outcome.messages, notice: null };
+
+    console.log("[context] compacted", {
+      ...params.logContext,
+      summarisedMessages: outcome.compacted.summarisedTurns,
+      tokensBefore: outcome.compacted.tokensBefore,
+      tokensAfter: outcome.compacted.tokensAfter,
+      degraded: outcome.compacted.degraded,
+    });
+    return {
+      messages: outcome.messages,
+      notice: `data: ${JSON.stringify({
+        type: "context_compacted",
+        summarisedMessages: outcome.compacted.summarisedTurns,
+        degraded: outcome.compacted.degraded,
+      })}\n\n`,
+    };
+  } catch (err) {
+    console.error(
+      "[context] compaction failed, sending full history",
+      err instanceof Error ? err.message : err,
+    );
+    return { messages: params.messages, notice: null };
+  }
+}
