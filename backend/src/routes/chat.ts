@@ -416,7 +416,12 @@ chatRouter.post("/:chatId/generate-title", requireAuth, async (req, res) => {
             const titleText = await completeText({
                 model: title_model,
                 user: `Generate a concise title (3–6 words) that describes the topic or document of a chat in an AI Legal Platform that starts with the message below. Do NOT include words like "Legal Assistant", "AI", "Chat", or any similar prefix. Return only the title, no quotes or punctuation.\n\nMessage: ${message.slice(0, 500)}`,
-                maxTokens: 64,
+                // Reasoning models emit reasoning_content before any visible
+                // text, and on this endpoint that easily exceeds a 64-token
+                // budget — the call then succeeds with an empty string and the
+                // title silently falls back to a slice of the user's message.
+                // The headroom costs nothing on a model that answers directly.
+                maxTokens: 512,
                 apiKeys: api_keys,
             });
             title = normalizeGeneratedTitle(titleText, fallbackTitle);

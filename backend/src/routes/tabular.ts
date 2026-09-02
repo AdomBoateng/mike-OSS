@@ -1589,7 +1589,9 @@ async function generateChatTitle(
         const raw = await completeText({
             model,
             user: `${contextBlock}Generate a short title (4-6 words) for a chat that starts with the message below. The title should reflect the user's specific question, not the review or project name. Return only the title, no punctuation, no quotes:\n\n${firstUserMessage}`,
-            maxTokens: 64,
+            // See the note in routes/chat.ts: a reasoning model spends this
+            // budget on reasoning_content and returns empty visible text.
+            maxTokens: 512,
             apiKeys,
         });
         return raw.trim().slice(0, 80) || null;
