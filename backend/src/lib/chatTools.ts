@@ -49,6 +49,10 @@ import {
 import { safeErrorLog, safeErrorMessage } from "./safeError";
 import { validateToolCallArguments } from "./toolArgs";
 import {
+  CitationStreamSplitter,
+  CITATIONS_CLOSE_TAG,
+} from "./citationStream";
+import {
   searchLegislation,
   fetchLegislationText,
   findInLegislationText,
@@ -3902,8 +3906,6 @@ export async function runToolCalls(
 // ---------------------------------------------------------------------------
 
 const CITATIONS_BLOCK_RE = /<CITATIONS>\s*([\s\S]*?)\s*<\/CITATIONS>/;
-const CITATIONS_OPEN_TAG = "<CITATIONS>";
-const CITATIONS_CLOSE_TAG = "</CITATIONS>";
 
 type CitationParseDiagnostics = {
   hasBlock: boolean;
@@ -4272,10 +4274,14 @@ export async function runLLMStream(params: {
   let iterText = "";
   let iterVisibleText = "";
   let iterReasoning = "";
-  let visibleTailBuffer = "";
-  let citationsOpenSeen = false;
-  let streamingCitationsBuffer = "";
+  // Splits the model's text into prose and <CITATIONS> blocks. A block is
+  // withheld; everything around it — including anything the model writes after
+  // the closing tag — still reaches the user.
+  const citationSplitter = new CitationStreamSplitter();
   let streamedCitationCount = 0;
+  // The block a "started" snapshot has been emitted for. Only block 1 counts:
+  // CITATIONS_BLOCK_RE is non-global, so that is the one the final parse reads.
+  let citationsStartedBlock = 0;
 
   const emitCitationStreamSnapshot = (
     status: "started" | "partial",
@@ -4285,74 +4291,49 @@ export async function runLLMStream(params: {
     write(`data: ${JSON.stringify({ type: "citations", status, citations })}\n\n`);
   };
 
-  const streamHiddenCitationContent = (delta: string) => {
-    if (buildCitations || !delta) return;
-    streamingCitationsBuffer += delta;
-    const partial = parsePartialCitationObjects(streamingCitationsBuffer);
-    if (partial.length <= streamedCitationCount) return;
-    streamedCitationCount = partial.length;
-    const citations = partial.map((c) =>
-      createCitationAnnotation(
-        c,
-        docIndex,
-        courtlistenerTurnState.casesByClusterId,
-      ),
-    );
-    emitCitationStreamSnapshot("partial", citations);
+  const emitVisible = (text: string, emit = true) => {
+    if (!text) return;
+    iterVisibleText += text;
+    if (emit) {
+      write(`data: ${JSON.stringify({ type: "content_delta", text })}\n\n`);
+    }
   };
 
   const streamVisibleContent = (delta: string) => {
     if (!delta) return;
-    if (citationsOpenSeen) {
-      streamHiddenCitationContent(delta);
-      return;
-    }
-
-    const combined = visibleTailBuffer + delta;
-    const markerIdx = combined.indexOf(CITATIONS_OPEN_TAG);
-    if (markerIdx >= 0) {
-      const visible = combined.slice(0, markerIdx);
-      if (visible) {
-        iterVisibleText += visible;
-        write(
-          `data: ${JSON.stringify({ type: "content_delta", text: visible })}\n\n`,
-        );
+    for (const segment of citationSplitter.push(delta)) {
+      if (segment.kind === "visible") {
+        emitVisible(segment.text);
+        continue;
       }
-      visibleTailBuffer = "";
-      citationsOpenSeen = true;
-      streamingCitationsBuffer = "";
-      streamedCitationCount = 0;
-      emitCitationStreamSnapshot("started", []);
-      streamHiddenCitationContent(
-        combined.slice(markerIdx + CITATIONS_OPEN_TAG.length),
-      );
-      return;
-    }
-
-    const keep = Math.min(CITATIONS_OPEN_TAG.length - 1, combined.length);
-    const visible = combined.slice(0, combined.length - keep);
-    visibleTailBuffer = combined.slice(combined.length - keep);
-    if (visible) {
-      iterVisibleText += visible;
-      write(
-        `data: ${JSON.stringify({ type: "content_delta", text: visible })}\n\n`,
+      // Only the first block is the one the final parse will read; later ones
+      // are still withheld, but they get no snapshots of their own.
+      if (buildCitations || segment.blockIndex !== 1) continue;
+      if (citationsStartedBlock !== 1) {
+        citationsStartedBlock = 1;
+        streamedCitationCount = 0;
+        emitCitationStreamSnapshot("started", []);
+      }
+      const partial = parsePartialCitationObjects(segment.body);
+      if (partial.length <= streamedCitationCount) continue;
+      streamedCitationCount = partial.length;
+      emitCitationStreamSnapshot(
+        "partial",
+        partial.map((c) =>
+          createCitationAnnotation(
+            c,
+            docIndex,
+            courtlistenerTurnState.casesByClusterId,
+          ),
+        ),
       );
     }
   };
 
   const flushVisibleTail = (opts: { emit?: boolean } = {}) => {
-    const emit = opts.emit ?? true;
-    if (citationsOpenSeen || !visibleTailBuffer) {
-      visibleTailBuffer = "";
-      return;
-    }
-    iterVisibleText += visibleTailBuffer;
-    if (emit) {
-      write(
-        `data: ${JSON.stringify({ type: "content_delta", text: visibleTailBuffer })}\n\n`,
-      );
-    }
-    visibleTailBuffer = "";
+    // Whatever is still held back cannot be a complete tag, so it is prose —
+    // unless a block is still open, in which case the splitter withholds it.
+    emitVisible(citationSplitter.flush(), opts.emit ?? true);
   };
 
   const flushText = (opts: { emit?: boolean } = {}) => {
@@ -4364,10 +4345,9 @@ export async function runLLMStream(params: {
     }
     iterText = "";
     iterVisibleText = "";
-    visibleTailBuffer = "";
-    citationsOpenSeen = false;
-    streamingCitationsBuffer = "";
+    citationSplitter.reset();
     streamedCitationCount = 0;
+    citationsStartedBlock = 0;
   };
 
   const flushPartialTurn = (opts: { emit?: boolean } = {}) => {
