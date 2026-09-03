@@ -69,7 +69,7 @@ type UserProfileRow = {
     credits_reset_date: string;
     tier: string;
     title_model: string | null;
-    tabular_model: string;
+    tabular_model: string | null;
     mfa_on_login: boolean | null;
     legal_research_us: boolean | null;
     legal_research_gh: boolean | null;

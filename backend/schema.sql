@@ -1,7 +1,19 @@
--- Mike Supabase schema
--- Use this for a fresh Supabase database. Existing deployments should instead
--- apply the dated incremental migration files in backend/migrations that are
--- newer than the version of Mike they currently have deployed.
+-- Mike schema — the complete current shape, for a fresh database.
+--
+-- Applied unmodified, and it still carries Supabase-era foreign keys to
+-- auth.users and grants to the anon / authenticated / service_role roles, so
+-- db/initdb/00-auth-shim.sql must run first to create them. Both are handled
+-- for you by `node dist/scripts/migrate.js` (docker-compose mounts them into
+-- the Postgres entrypoint instead).
+--
+-- An EXISTING database must not be loaded from this file. Apply the dated files
+-- in backend/migrations/ that it has not seen yet — again, what the migrate
+-- script does.
+--
+-- A schema change belongs in BOTH places: a migration for deployed databases,
+-- and the matching edit here. This file is assumed to be at least as new as the
+-- newest migration, because a fresh database records them all as applied rather
+-- than replaying them over the top.
 
 create extension if not exists "pgcrypto";
 
@@ -18,7 +30,10 @@ create table if not exists public.user_profiles (
   message_credits_used integer not null default 0,
   credits_reset_date timestamptz not null default (now() + interval '30 days'),
   title_model text,
-  tabular_model text not null default 'gemini-3-flash-preview',
+  -- Null means "no preference": resolved at request time to whatever the
+  -- custom endpoint serves. Upstream defaulted this to a Gemini id, which this
+  -- fork cannot call. See migrations/20260903_02_*.
+  tabular_model text,
   quote_model text,
   custom_llm_base_url text,
   mfa_on_login boolean not null default false,
