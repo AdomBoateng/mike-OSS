@@ -1,8 +1,9 @@
 # Adding a new API tool source
 
-Mike exposes external APIs to the assistant as **tool sources**. There are two:
-CourtListener (US case law, API-key gated) and `ghana-law` (Parliament of Ghana
-legislation, no key). This is the recipe for adding another.
+Mike exposes external APIs to the assistant as **tool sources**. There are three:
+CourtListener (US case law, API-key gated), `ghana-law` (Parliament of Ghana
+legislation, no key), and `web-search` (open web via a self-hosted SearXNG,
+gated on a base URL rather than a key). This is the recipe for adding another.
 
 Read both existing sources before starting — between them they cover the two
 shapes you are likely to need. `courtlistenerSource.ts` is the minimal case;

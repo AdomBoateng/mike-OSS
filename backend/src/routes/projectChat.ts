@@ -161,6 +161,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         api_keys: apiKeys,
         legal_research_us: legalResearchUs,
         legal_research_gh: legalResearchGh,
+        web_search: webSearch,
         title_model: utilityModel,
     } = await getUserModelSettings(userId, db);
     const builtMessages = buildMessages(
@@ -168,7 +169,11 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
         docAvailability,
         systemPromptExtra,
         undefined,
-        { includeResearchTools: legalResearchUs, includeGhanaLaw: legalResearchGh },
+        {
+            includeResearchTools: legalResearchUs,
+            includeGhanaLaw: legalResearchGh,
+            includeWebSearch: webSearch,
+        },
     );
 
     // Project chats run longest of all — a matter accumulates turns across many
@@ -211,6 +216,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
             workflowStore,
             includeResearchTools: legalResearchUs,
             includeGhanaLaw: legalResearchGh,
+            includeWebSearch: webSearch,
             model,
             apiKeys,
             signal: streamAbort.signal,

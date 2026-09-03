@@ -144,8 +144,11 @@ the OOXML; each edit produces an `EditAnnotation` the UI can accept/reject.
 
 `lib/toolSources/` is a registry: each source contributes tool schemas, a system-prompt fragment, an
 optional API-key provider, and a gating predicate; registration throws on duplicate ids or tool-name
-collisions. Two sources: CourtListener (US case law) and `ghana-law` (Parliament of Ghana
-legislation, `lib/ghanaLaw.ts`, no API key). **Follow `docs/adding-api-sources.md`** when adding one —
+collisions. Three sources: CourtListener (US case law), `ghana-law` (Parliament of Ghana
+legislation, `lib/ghanaLaw.ts`, no API key), and `web-search` (open web via a self-hosted SearXNG,
+`lib/webSearch.ts`, gated on `SEARXNG_BASE_URL` — no public fallback, and it deliberately does not
+fetch page bodies: issuing requests to arbitrary URLs from a host that sits beside LDAP, Postgres
+and object storage is an SSRF surface needing its own design). **Follow `docs/adding-api-sources.md`** when adding one —
 note that tool *dispatch* still lives inline in `chatTools.ts`, so a new source needs a dispatch
 branch there too. MCP connectors are a separate path (`lib/mcp/`, per-user servers with OAuth) merged
 into the tool list by `lib/mcpConnectors.ts`.

@@ -73,6 +73,7 @@ type UserProfileRow = {
     mfa_on_login: boolean | null;
     legal_research_us: boolean | null;
     legal_research_gh: boolean | null;
+    web_search: boolean | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -178,7 +179,7 @@ function mcpOAuthPopupCsp(nonce: string) {
 }
 
 const PROFILE_SELECT =
-    "display_name, organisation, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login, legal_research_us, legal_research_gh";
+    "display_name, organisation, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login, legal_research_us, legal_research_gh, web_search";
 const PROFILE_SELECT_NO_LEGAL =
     "display_name, organisation, message_credits_used, credits_reset_date, tier, title_model, tabular_model, mfa_on_login";
 const LEGACY_PROFILE_SELECT =
@@ -222,6 +223,9 @@ async function selectProfile(
         }
         if (!("legal_research_gh" in row)) {
             Object.assign(row, { legal_research_gh: true });
+        }
+        if (!("web_search" in row)) {
+            Object.assign(row, { web_search: true });
         }
     }
     return legacy;
@@ -343,6 +347,7 @@ function serializeProfile(
         mfaOnLogin: row.mfa_on_login === true,
         legalResearchUs: row.legal_research_us !== false,
         legalResearchGh: row.legal_research_gh !== false,
+        webSearch: row.web_search !== false,
         // Only the user-supplied override is echoed back for editing; when the
         // value comes from the server env we hide it but flag the source so the
         // browser can render the field read-only, mirroring API-key handling.
@@ -361,6 +366,7 @@ function validateProfilePayload(body: unknown):
               tabular_model?: string;
               legal_research_us?: boolean;
               legal_research_gh?: boolean;
+              web_search?: boolean;
               updated_at: string;
           };
       }
@@ -392,6 +398,7 @@ function validateProfilePayload(body: unknown):
         tabular_model?: string;
         legal_research_us?: boolean;
         legal_research_gh?: boolean;
+        web_search?: boolean;
         updated_at: string;
     } = { updated_at: new Date().toISOString() };
 
@@ -435,6 +442,13 @@ function validateProfilePayload(body: unknown):
             };
         }
         update.legal_research_gh = raw.legalResearchGh;
+    }
+
+    if ("webSearch" in raw) {
+        if (typeof raw.webSearch !== "boolean") {
+            return { ok: false, detail: "webSearch must be a boolean" };
+        }
+        update.web_search = raw.webSearch;
     }
 
     return { ok: true, update };

@@ -311,6 +311,7 @@ export interface UserProfile {
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
     legalResearchGh: boolean;
+    webSearch: boolean;
     /** User-supplied base URL for the custom OpenAI-compatible endpoint (null when unset or env-provided). */
     customLlmBaseUrl: string | null;
     /** True when a custom endpoint base URL is available from the env or the user. */
@@ -331,6 +332,7 @@ export async function updateUserProfile(payload: {
     tabularModel?: string;
     legalResearchUs?: boolean;
     legalResearchGh?: boolean;
+    webSearch?: boolean;
 }): Promise<UserProfile> {
     return apiRequest<UserProfile>("/user/profile", {
         method: "PATCH",

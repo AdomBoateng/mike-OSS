@@ -53,6 +53,12 @@ import {
   CitationStreamSplitter,
   CITATIONS_CLOSE_TAG,
 } from "./citationStream";
+import { searchWeb } from "./webSearch";
+import {
+  WEB_SEARCH_TOOL_NAMES,
+  formatWebSearchResults,
+  type WebSearchToolEvent,
+} from "./legalSourcesTools/webSearchTools";
 import {
   searchLegislation,
   fetchLegislationText,
@@ -3129,6 +3135,33 @@ export async function runToolCalls(
           }),
         });
       }
+    } else if (tc.function.name === WEB_SEARCH_TOOL_NAMES.search) {
+      const query = typeof args.query === "string" ? args.query : "";
+      const limit = typeof args.limit === "number" ? args.limit : undefined;
+      const category =
+        args.category === "news" || args.category === "general"
+          ? args.category
+          : undefined;
+      // searchWeb returns its failure rather than throwing: a search instance
+      // being down should let the turn continue on the tools that do work.
+      const outcome = await searchWeb({ query, limit, category });
+      const event: WebSearchToolEvent = {
+        type: "web_search",
+        query,
+        result_count: outcome.results.length,
+      };
+      write(`data: ${JSON.stringify(event)}
+
+`);
+      toolResults.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: formatWebSearchResults({
+          query,
+          results: outcome.results,
+          error: outcome.error,
+        }),
+      });
     } else if (tc.function.name === GHANA_LAW_TOOL_NAMES.search) {
       const query = typeof args.query === "string" ? args.query : "";
       try {
@@ -4202,6 +4235,7 @@ export async function runLLMStream(params: {
   extraTools?: unknown[];
   includeResearchTools?: boolean;
   includeGhanaLaw?: boolean;
+  includeWebSearch?: boolean;
   workflowStore?: WorkflowStore;
   tabularStore?: TabularCellStore;
   buildCitations?: (fullText: string) => unknown[];
@@ -4229,6 +4263,7 @@ export async function runLLMStream(params: {
     extraTools,
     includeResearchTools = true,
     includeGhanaLaw = true,
+    includeWebSearch = true,
     workflowStore,
     tabularStore,
     buildCitations,
@@ -4239,7 +4274,7 @@ export async function runLLMStream(params: {
   } = params;
   const researchTools = defaultToolSources.tools(
     buildToolSourceContext(
-      { includeResearchTools, includeGhanaLaw },
+      { includeResearchTools, includeGhanaLaw, includeWebSearch },
       availableProvidersFrom(apiKeys),
     ),
   );

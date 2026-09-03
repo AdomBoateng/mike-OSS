@@ -14,6 +14,7 @@ export type UserModelSettings = {
     tabular_model: string;
     legal_research_us: boolean;
     legal_research_gh: boolean;
+    web_search: boolean;
     api_keys: UserApiKeys;
 };
 
@@ -101,7 +102,7 @@ export async function getUserModelSettings(
     const { data } = await client
         .from("user_profiles")
         .select(
-            "title_model, tabular_model, legal_research_us, legal_research_gh",
+            "title_model, tabular_model, legal_research_us, legal_research_gh, web_search",
         )
         .eq("user_id", userId)
         .single();
@@ -125,6 +126,12 @@ export async function getUserModelSettings(
         legal_research_gh:
             (data as { legal_research_gh?: boolean | null } | null)
                 ?.legal_research_gh !== false,
+        // Absent column (a database predating the web-search migration) means
+        // enabled, matching the column default. The real gate is whether a
+        // SearXNG instance is configured at all.
+        web_search:
+            (data as { web_search?: boolean | null } | null)?.web_search !==
+            false,
         api_keys,
     };
 }

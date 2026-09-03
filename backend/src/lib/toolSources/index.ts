@@ -2,6 +2,7 @@ import type { ApiKeyProvider } from "../userApiKeys";
 import { ToolSourceRegistry } from "./registry";
 import { courtlistenerSource } from "./courtlistenerSource";
 import { ghanaLawSource } from "./ghanaLawSource";
+import { webSearchSource } from "./webSearchSource";
 import type { ToolSourceContext } from "./types";
 
 export * from "./types";
@@ -19,6 +20,7 @@ export { ghanaLawSource, GHANA_LAW_SOURCE_ID } from "./ghanaLawSource";
 export const defaultToolSources = new ToolSourceRegistry();
 defaultToolSources.register(courtlistenerSource);
 defaultToolSources.register(ghanaLawSource);
+defaultToolSources.register(webSearchSource);
 
 /**
  * Per-jurisdiction research toggles. Each source gates on its own flag: they
@@ -32,6 +34,12 @@ export interface ToolSourceFlags {
   includeResearchTools?: boolean;
   /** Legal Research > Ghana — Parliament of Ghana legislation. */
   includeGhanaLaw?: boolean;
+  /**
+   * Web Search — open-web results via the firm's own SearXNG instance. Unlike
+   * the legislation sources this one sends the user's words outside the
+   * building, so it is worth being able to turn off per account.
+   */
+  includeWebSearch?: boolean;
 }
 
 /**
@@ -49,6 +57,7 @@ export function buildToolSourceContext(
     flags: {
       includeResearchTools: f.includeResearchTools ?? true,
       includeGhanaLaw: f.includeGhanaLaw ?? true,
+      includeWebSearch: f.includeWebSearch ?? true,
     },
   };
 }

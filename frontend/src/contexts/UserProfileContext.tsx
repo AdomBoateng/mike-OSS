@@ -36,6 +36,7 @@ interface UserProfile {
     mfaOnLogin: boolean;
     legalResearchUs: boolean;
     legalResearchGh: boolean;
+    webSearch: boolean;
     customLlmBaseUrl: string | null;
     customLlmConfigured: boolean;
     customLlmSource: ApiKeySource;
@@ -56,6 +57,7 @@ interface UserProfileContextType {
     updateMfaOnLogin: (enabled: boolean) => Promise<boolean>;
     updateLegalResearchUs: (enabled: boolean) => Promise<boolean>;
     updateLegalResearchGh: (enabled: boolean) => Promise<boolean>;
+    updateWebSearch: (enabled: boolean) => Promise<boolean>;
     updateApiKey: (
         provider: ApiKeyProvider,
         value: string | null,
@@ -137,6 +139,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 mfaOnLogin: false,
                 legalResearchUs: true,
                 legalResearchGh: true,
+                webSearch: true,
                 customLlmBaseUrl: null,
                 customLlmConfigured: false,
                 customLlmSource: null,
@@ -297,6 +300,22 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
         [user],
     );
 
+    const updateWebSearch = useCallback(
+        async (enabled: boolean): Promise<boolean> => {
+            if (!user) return false;
+            try {
+                const updated = await updateUserProfile({ webSearch: enabled });
+                setProfile((prev) =>
+                    prev ? { ...prev, ...toProfile(updated) } : null,
+                );
+                return true;
+            } catch {
+                return false;
+            }
+        },
+        [user],
+    );
+
     const updateApiKey = useCallback(
         async (
             provider: ApiKeyProvider,
@@ -385,6 +404,7 @@ export function UserProfileProvider({ children }: { children: ReactNode }) {
                 updateMfaOnLogin,
                 updateLegalResearchUs,
                 updateLegalResearchGh,
+                updateWebSearch,
                 updateApiKey,
                 updateCustomLlmBaseUrl,
                 reloadProfile,

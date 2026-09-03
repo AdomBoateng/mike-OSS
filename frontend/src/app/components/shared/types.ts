@@ -125,6 +125,17 @@ export type AssistantEvent =
    * working from a summary of what was said, not the original wording, and a
    * lawyer needs to know that before relying on an answer.
    */
+  /**
+   * An open-web search ran. Rendered so the user can see that the answer drew
+   * on the web rather than on a legal source — the two deserve very different
+   * weight, and only the reader can apply it.
+   */
+  | {
+      type: "web_search";
+      query: string;
+      result_count: number;
+      isStreaming?: boolean;
+    }
   | {
       type: "context_compacted";
       summarisedMessages: number;

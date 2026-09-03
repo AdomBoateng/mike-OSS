@@ -2299,6 +2299,34 @@ export function AssistantMessage({
         }
         // Ghana legislation. CourtListenerBlock is generic label/detail/items
         // chrome despite its name, so it is reused rather than duplicated.
+        if (event.type === "web_search") {
+            const count = event.result_count ?? 0;
+            // Labelled "the web" rather than folded in with the legal sources:
+            // a reader needs to know at a glance which parts of an answer came
+            // from a search engine and which came from an enacted text.
+            const detail = event.isStreaming
+                ? event.query
+                    ? `for "${event.query}"`
+                    : undefined
+                : `${count} ${count === 1 ? "result" : "results"}${
+                      event.query ? ` for "${event.query}"` : ""
+                  }`;
+            return (
+                <CourtListenerBlock
+                    key={globalIdx}
+                    label={
+                        event.isStreaming
+                            ? "Searching the web"
+                            : count === 0
+                              ? "Web search found nothing"
+                              : "Searched the web"
+                    }
+                    detail={detail}
+                    isStreaming={!!event.isStreaming}
+                    showConnector={showConnector}
+                />
+            );
+        }
         if (event.type === "ghana_law_search") {
             const count = event.result_count ?? 0;
             const detail = event.isStreaming

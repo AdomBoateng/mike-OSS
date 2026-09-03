@@ -6,8 +6,12 @@ import { useUserProfile } from "@/contexts/UserProfileContext";
 import { AccountSection } from "../AccountSection";
 
 export default function FeaturesPage() {
-    const { profile, updateLegalResearchUs, updateLegalResearchGh } =
-        useUserProfile();
+    const {
+        profile,
+        updateLegalResearchUs,
+        updateLegalResearchGh,
+        updateWebSearch,
+    } = useUserProfile();
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
@@ -17,6 +21,7 @@ export default function FeaturesPage() {
     const [draftLegalResearchGh, setDraftLegalResearchGh] = useState<
         boolean | null
     >(null);
+    const [draftWebSearch, setDraftWebSearch] = useState<boolean | null>(null);
     const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
@@ -35,7 +40,11 @@ export default function FeaturesPage() {
     const ghChanged =
         draftLegalResearchGh !== null &&
         draftLegalResearchGh !== persistedLegalResearchGh;
-    const hasChanges = usChanged || ghChanged;
+    const persistedWebSearch = profile?.webSearch ?? true;
+    const webEnabled = draftWebSearch ?? persistedWebSearch;
+    const webChanged =
+        draftWebSearch !== null && draftWebSearch !== persistedWebSearch;
+    const hasChanges = usChanged || ghChanged || webChanged;
 
     const handleUpdateLegalResearch = async () => {
         if (saving) return;
@@ -46,11 +55,13 @@ export default function FeaturesPage() {
         // not rewrite the other.
         const ok =
             (!usChanged || (await updateLegalResearchUs(usEnabled))) &&
-            (!ghChanged || (await updateLegalResearchGh(ghEnabled)));
+            (!ghChanged || (await updateLegalResearchGh(ghEnabled))) &&
+            (!webChanged || (await updateWebSearch(webEnabled)));
         setSaving(false);
         if (ok) {
             setDraftLegalResearchUs(null);
             setDraftLegalResearchGh(null);
+            setDraftWebSearch(null);
             setSaved(true);
             if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
             savedTimerRef.current = setTimeout(() => setSaved(false), 1600);
@@ -136,6 +147,45 @@ export default function FeaturesPage() {
                                 disabled={saving}
                                 className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border transition-colors ${
                                     ghEnabled
+                                        ? "border-gray-950 bg-gray-950 text-white"
+                                        : "border-gray-300 bg-white text-transparent"
+                                } disabled:cursor-not-allowed disabled:opacity-45`}
+                            >
+                                <Check className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
+                        <div className="mt-2 flex items-start justify-between gap-3 px-3 bg-gray-50 py-3 rounded-md">
+                            <label
+                                htmlFor="web-search"
+                                className="min-w-0 cursor-pointer select-none"
+                            >
+                                <p className="text-sm text-gray-900">
+                                    Web search
+                                </p>
+                                <p className="text-sm text-gray-500">
+                                    Let the assistant search the open web for
+                                    current facts &mdash; companies, news,
+                                    regulator guidance. Queries go to your
+                                    firm&rsquo;s own search instance, not a
+                                    third party. Web pages are not legal
+                                    authority and the assistant is told to say
+                                    so. Unavailable unless an instance is
+                                    configured.
+                                </p>
+                            </label>
+                            <button
+                                id="web-search"
+                                type="button"
+                                role="checkbox"
+                                aria-checked={webEnabled}
+                                onClick={() => {
+                                    setDraftWebSearch(!webEnabled);
+                                    setSaved(false);
+                                    setSaveError(null);
+                                }}
+                                disabled={saving}
+                                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border transition-colors ${
+                                    webEnabled
                                         ? "border-gray-950 bg-gray-950 text-white"
                                         : "border-gray-300 bg-white text-transparent"
                                 } disabled:cursor-not-allowed disabled:opacity-45`}

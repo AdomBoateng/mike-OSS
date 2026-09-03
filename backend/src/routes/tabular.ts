@@ -1356,6 +1356,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
             // defaulting to on.
             includeResearchTools: false,
             includeGhanaLaw: false,
+            includeWebSearch: false,
             tabularStore,
             buildCitations: (text) =>
                 extractTabularAnnotations(text, tabularStore),
