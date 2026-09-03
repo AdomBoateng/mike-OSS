@@ -75,6 +75,27 @@ interface SearxngResponse {
     engine?: unknown;
     publishedDate?: unknown;
   }[];
+  /** [engine, reason] pairs for engines that failed this query. */
+  unresponsive_engines?: unknown;
+}
+
+/**
+ * Names of the engines that failed, from SearXNG's `unresponsive_engines`.
+ *
+ * Entries are ["duckduckgo", "CAPTCHA"] pairs, but the shape is not contractual
+ * and a bare string shows up too, so both are handled and anything else ignored.
+ */
+function unresponsiveEngineNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") names.push(entry);
+    else if (Array.isArray(entry) && typeof entry[0] === "string") {
+      const reason = typeof entry[1] === "string" ? entry[1] : "";
+      names.push(reason ? `${entry[0]} (${reason})` : entry[0]);
+    }
+  }
+  return names;
 }
 
 export interface WebSearchOutcome {
@@ -154,6 +175,24 @@ export async function searchWeb(params: {
         publishedAt: clean(item.publishedDate, 40) || undefined,
       });
       if (results.length >= limit) break;
+    }
+
+    // Nothing found AND every engine that was tried failed is an infrastructure
+    // fault, not an absence of results — and the two must not look the same to
+    // the model, which would otherwise be told "the web found nothing for this
+    // query" and report that to a lawyer as a finding. Engines suspending a
+    // datacenter IP with a CAPTCHA is the common cause and it is intermittent,
+    // so this is worth saying out loud rather than swallowing.
+    if (results.length === 0) {
+      const failed = unresponsiveEngineNames(body.unresponsive_engines);
+      if (failed.length > 0) {
+        return {
+          results: [],
+          error:
+            `No engine answered: ${failed.join(", ")}. This is a fault in the ` +
+            `search instance, not a sign that nothing exists for this query.`,
+        };
+      }
     }
     return { results };
   } catch (err) {

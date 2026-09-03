@@ -1,19 +1,29 @@
-# SearXNG — the open-web search backend.
+# SearXNG — the open-web search backend for the assistant's web_search tool.
 #
-# Running it in the cluster rather than as a standalone Docker host is the
-# recommendation: it is an internal dependency of one application, it holds no
-# state worth keeping, and in here it gets a ClusterIP with no Ingress, so it is
-# reachable by the backend and by nothing else. A separate Docker host would be
-# another machine to patch and another thing to firewall, for no gain.
+# In-cluster rather than a standalone Docker host: it is one application's
+# internal dependency, holds nothing worth keeping, and in here it gets a
+# ClusterIP and no Ingress. A separate host would be another machine to patch
+# and firewall for no gain.
 #
-# Deliberately not exposed through the ingress. An open SearXNG instance is an
-# open proxy: anyone who can reach it can make this network issue arbitrary
-# outbound search requests.
+# NOT exposed through the ingress, and that is not a detail. An open SearXNG is
+# an open proxy: anyone who can reach it can make this network issue arbitrary
+# outbound search requests. Keep it ClusterIP, and apply the NetworkPolicy in
+# networkpolicy.yaml if the CNI enforces them.
 #
 # Apply into the same namespace as the app:
-#   kubectl -n mike-uat apply -f k8s/searxng/searxng.yaml
-# then point the app at it in the Secret:
-#   SEARXNG_BASE_URL=http://searxng:8080
+#
+#   kubectl -n mike-uat create secret generic searxng-secret \
+#     --from-literal=SEARXNG_SECRET="$(openssl rand -hex 32)"
+#   kubectl -n mike-uat apply -k k8s/searxng
+#
+# The app finds it through SEARXNG_BASE_URL, which is set in the application
+# ConfigMap (k8s/base/configmap.yaml) — an in-cluster service address is not a
+# secret.
+#
+# Everything below was checked against searxng/searxng:2026.9.3-8f452ee89: it
+# starts, /healthz answers 200, `?format=json` answers 200 with real results
+# carrying the title/url/content/engine/publishedDate fields lib/webSearch.ts
+# reads, and it runs correctly as uid 977.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -24,22 +34,32 @@ data:
     use_default_settings: true
     general:
       instance_name: "Mike search"
-      # No public instance list, no metrics endpoint.
       donation_url: false
       contact_url: false
     server:
-      bind_address: "0.0.0.0"
-      port: 8080
-      # Overridden by the SEARXNG_SECRET env var below; a value has to be
-      # present here for the file to parse.
-      secret_key: "set-via-env"
+      # Replaced at runtime by the SEARXNG_SECRET environment variable below —
+      # verified, not assumed: with SEARXNG_SECRET set, get_setting(
+      # "server.secret_key") returns the env value and not this one. A literal
+      # has to be here anyway for the file to parse.
+      #
+      # Note the image only generates a random key when settings.yml is ABSENT.
+      # Because this ConfigMap supplies one, that never happens — so if the env
+      # var were ever unset, the instance would run on the public placeholder
+      # below. It is a required Secret for that reason.
+      secret_key: "replaced-by-SEARXNG_SECRET"
+      # Off because nothing but the backend can reach this Service. The limiter
+      # keys on client IP and logs "X-Forwarded-For nor X-Real-IP header is
+      # set!" for direct in-cluster calls, which is noise here.
       limiter: false
       image_proxy: false
+      # bind_address/port are deliberately NOT set: the image serves through
+      # granian, which takes GRANIAN_HOST/GRANIAN_PORT from the environment.
+      # Setting them here parses fine and does nothing, which is worse than
+      # leaving them out.
     search:
-      # THE ONE LINE THAT MATTERS. A default install serves HTML only, and the
-      # app's every search comes back 403 with no other explanation. lib/
-      # webSearch.ts turns that status into a message naming this setting,
-      # because the bare 403 tells an operator nothing.
+      # THE ONE LINE THAT MATTERS. A default install serves HTML only and every
+      # search comes back 403. lib/webSearch.ts turns that status into a message
+      # naming this setting, because a bare 403 tells an operator nothing.
       formats:
         - html
         - json
@@ -54,7 +74,11 @@ metadata:
   name: searxng
   labels:
     app.kubernetes.io/name: searxng
+    app.kubernetes.io/part-of: mike
 spec:
+  # One is enough, and more is not obviously better: every replica is another
+  # source IP hitting the same upstream engines, which is what gets an instance
+  # CAPTCHA'd in the first place.
   replicas: 1
   selector:
     matchLabels:
@@ -63,18 +87,30 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: searxng
+        app.kubernetes.io/part-of: mike
     spec:
+      # The image runs granian as root by default. Verified working as the
+      # image's own searxng user (uid/gid 977), which owns /etc/searxng and
+      # /var/cache/searxng, so the entrypoint's ownership check passes and its
+      # root-only steps are simply skipped.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 977
+        runAsGroup: 977
+        fsGroup: 977
       containers:
         - name: searxng
-          image: docker.io/searxng/searxng:latest
+          # Pinned. `latest` on a service that reaches the open internet means a
+          # silent, unreviewed change to what the assistant is reading.
+          image: docker.io/searxng/searxng:2026.9.3-8f452ee89
           ports:
             - name: http
               containerPort: 8080
           env:
+            # The URL this instance believes it is served at. Only used for
+            # self-referential links; the app reaches it by Service name.
             - name: SEARXNG_BASE_URL
               value: "http://searxng:8080/"
-            # Session signing key. Generate with `openssl rand -hex 32` and put
-            # it in its own Secret; it is not shared with the app.
             - name: SEARXNG_SECRET
               valueFrom:
                 secretKeyRef:
@@ -85,16 +121,30 @@ spec:
               mountPath: /etc/searxng/settings.yml
               subPath: settings.yml
               readOnly: true
+            # The entrypoint requires this to exist and be writable before it
+            # will start.
+            - name: cache
+              mountPath: /var/cache/searxng
+          # First start took ~30s in testing, so give it room rather than
+          # letting the kubelet restart it mid-boot.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
             periodSeconds: 30
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: "50m"
@@ -102,10 +152,21 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # readOnlyRootFilesystem is deliberately absent: tested, and the
+            # container does not start with it. The entrypoint writes outside
+            # the two mounted paths.
+            readOnlyRootFilesystem: false
       volumes:
         - name: settings
           configMap:
             name: searxng-settings
+        - name: cache
+          emptyDir:
+            sizeLimit: 256Mi
 ---
 apiVersion: v1
 kind: Service
@@ -113,6 +174,7 @@ metadata:
   name: searxng
   labels:
     app.kubernetes.io/name: searxng
+    app.kubernetes.io/part-of: mike
 spec:
   type: ClusterIP
   selector:
