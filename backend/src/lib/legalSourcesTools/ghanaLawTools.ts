@@ -59,9 +59,13 @@ How to use it:
    the user for an Act number before trying.
 2. ${GHANA_LAW_TOOL_NAMES.findIn} to locate specific provisions inside an Act. Acts are long —
    hundreds of thousands of characters — so prefer this over reading the whole
-   document. Use ${GHANA_LAW_TOOL_NAMES.read} only when you genuinely need continuous text,
-   and page through it with the offset it returns.
-3. ${GHANA_LAW_TOOL_NAMES.findAmendments} whenever you rely on an Act's text (see below).
+   document. Its excerpts are large enough to answer most questions on their own.
+3. ${GHANA_LAW_TOOL_NAMES.read} only when you need more than the excerpt gave you. Pass the
+   \`excerptOffset\` from the ${GHANA_LAW_TOOL_NAMES.findIn} match you care about — that lands
+   you exactly on the provision. Never invent an offset and never hunt for a
+   section by trying successive offsets; if the excerpt did not contain what you
+   need, re-run ${GHANA_LAW_TOOL_NAMES.findIn} with a phrase from the part you are missing.
+4. ${GHANA_LAW_TOOL_NAMES.findAmendments} whenever you rely on an Act's text (see below).
 
 Search once, then move on. One ${GHANA_LAW_TOOL_NAMES.search} call with the Act's short title is
 normally enough: take the best match from those results and proceed to
@@ -123,7 +127,7 @@ export const GHANA_LAW_TOOLS = [
         function: {
             name: GHANA_LAW_TOOL_NAMES.findIn,
             description:
-                "Find passages inside one Act by keyword or phrase. This is the preferred way to read legislation: Acts run to hundreds of thousands of characters, so search for the provision you need rather than reading the whole document. Returns excerpts with page numbers.",
+                "Find passages inside one Act by keyword or phrase. This is the preferred way to read legislation: Acts run to hundreds of thousands of characters, so search for the provision you need rather than reading the whole document. Each match returns a generous excerpt plus its page and, crucially, `excerptOffset` — pass that straight to ghana_law_read to open the surrounding text. Never guess an offset; the excerpt already tells you where the provision is.",
             parameters: {
                 type: "object",
                 properties: {
@@ -161,7 +165,7 @@ export const GHANA_LAW_TOOLS = [
                     offset: {
                         type: "integer",
                         description:
-                            "Character offset to start from (default 0). Use the nextOffset from a previous call to continue.",
+                            "Character offset to start from (default 0). Use `excerptOffset` from a ghana_law_find_in match to open a provision you have already located, or `nextOffset` from a previous read to continue in sequence. Do not guess: a guessed offset lands in an unrelated part of the Act.",
                     },
                 },
                 required: ["itemId"],

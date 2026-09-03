@@ -2303,8 +2303,8 @@ function ghanaQualityNote(
     return "No readable document is attached to this item. Say so; do not supply the text from memory.";
   }
   return found === 0
-    ? "The Act was read successfully but the search term does not appear. Report that rather than inferring the provision."
-    : "Text is as enacted; amendments are separate Acts and are not included here.";
+    ? "The Act was read successfully but the search term does not appear. Report that rather than inferring the provision. If you expected it to be there, try ghana_law_find_in again with different wording — do NOT start paging through the Act with ghana_law_read looking for it."
+    : "Text is as enacted; amendments are separate Acts and are not included here. Each match carries an excerptOffset: if you need more than the excerpt shows, pass that exact value to ghana_law_read. Never guess an offset or page through the Act hunting for a section you have already located here.";
 }
 
 export async function runToolCalls(

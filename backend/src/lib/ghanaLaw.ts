@@ -468,17 +468,39 @@ export async function fetchLegislationText(
  * this, not whole-document reads, is the primary way the model should read a
  * long Act.
  */
+/**
+ * A hit inside an Act.
+ *
+ * `offset` is the character position of the match in the extracted text, and it
+ * is the whole point of this shape: it is what `ghana_law_read` takes. Returning
+ * only a page number — which is what this did originally — left the model with
+ * no way to open the surrounding text except to guess an offset, and it guessed
+ * badly. One observed run spent six `read` calls and six minutes hunting for a
+ * section that `find_in` had already located exactly.
+ */
+export interface LegislationMatch {
+  page: number | null;
+  /** Character offset of the match, for ghana_law_read. */
+  offset: number;
+  /** Offset of the excerpt's first character, so a read shows the run-up. */
+  excerptOffset: number;
+  excerpt: string;
+}
+
 export function findInLegislationText(
   text: string,
   query: string,
   opts: { maxMatches?: number; contextChars?: number } = {},
-): { page: number | null; excerpt: string }[] {
+): LegislationMatch[] {
   const maxMatches = Math.min(Math.max(opts.maxMatches ?? 8, 1), 25);
-  const contextChars = Math.min(Math.max(opts.contextChars ?? 700, 100), 4000);
+  // A statutory section routinely runs past 700 characters, so the old default
+  // cut excerpts off mid-subsection and forced a follow-up read for text that
+  // could have been returned first time.
+  const contextChars = Math.min(Math.max(opts.contextChars ?? 2400, 100), 8000);
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
 
-  const matches: { page: number | null; excerpt: string }[] = [];
+  const matches: LegislationMatch[] = [];
   const hay = text.toLowerCase();
   let from = 0;
   while (matches.length < maxMatches) {
@@ -495,6 +517,8 @@ export function findInLegislationText(
         : Number.parseInt(before.slice(lastMarker + 6), 10) || null;
     matches.push({
       page,
+      offset: at,
+      excerptOffset: start,
       excerpt: text.slice(start, end).replace(/\s+/g, " ").trim(),
     });
     from = at + needle.length;
