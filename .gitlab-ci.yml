@@ -14,6 +14,17 @@
 # must finish before the Deployments roll. See k8s/base/migrate/ and
 # docs/KUBERNETES.md.
 
+# Without this, a branch that has an open merge request gets two pipelines for
+# every push — a branch one and a merge-request one — which doubles the runner
+# load and makes "the pipeline" ambiguous in the MR.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
 stages:
   - test
   - secret-detection
@@ -91,32 +102,43 @@ frontend:build:
     - mkdir -p /kaniko/.docker
     - |
       echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+  script:
+    # Every build is tagged with the commit SHA. `latest` moves only on the
+    # default branch and a release tag gets its own name, so `latest` always
+    # means "what is on main" and never "whatever an open MR last pushed".
+    - |
+      DESTINATIONS="--destination $IMAGE:$IMAGE_TAG"
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        DESTINATIONS="$DESTINATIONS --destination $IMAGE:latest"
+      fi
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        DESTINATIONS="$DESTINATIONS --destination $IMAGE:$CI_COMMIT_TAG"
+      fi
+      echo "pushing: $DESTINATIONS"
+      /kaniko/executor \
+        --context "$CI_PROJECT_DIR/$CONTEXT_DIR" \
+        --dockerfile "$CI_PROJECT_DIR/$CONTEXT_DIR/Dockerfile" \
+        $DESTINATIONS \
+        --cache=true
+  # Deliberately NOT run on merge requests. Images are built for things that get
+  # deployed, and the tests are what should gate a merge — making an MR wait on
+  # the registry means a registry that is not set up yet blocks every merge,
+  # which has nothing to do with whether the change is good.
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 build:backend:
   extends: .kaniko
-  script:
-    - >-
-      /kaniko/executor
-      --context "$CI_PROJECT_DIR/backend"
-      --dockerfile "$CI_PROJECT_DIR/backend/Dockerfile"
-      --destination "$BACKEND_IMAGE:$IMAGE_TAG"
-      --destination "$BACKEND_IMAGE:latest"
-      --cache=true
+  variables:
+    IMAGE: $BACKEND_IMAGE
+    CONTEXT_DIR: backend
 
 build:frontend:
   extends: .kaniko
-  script:
-    - >-
-      /kaniko/executor
-      --context "$CI_PROJECT_DIR/frontend"
-      --dockerfile "$CI_PROJECT_DIR/frontend/Dockerfile"
-      --destination "$FRONTEND_IMAGE:$IMAGE_TAG"
-      --destination "$FRONTEND_IMAGE:latest"
-      --cache=true
+  variables:
+    IMAGE: $FRONTEND_IMAGE
+    CONTEXT_DIR: frontend
 
 # ---------------------------------------------------------------------------
 # deploy
