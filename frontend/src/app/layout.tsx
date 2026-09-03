@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Inter, EB_Garamond } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
@@ -61,6 +62,14 @@ export default function RootLayout({
             <body
                 className={`${inter.variable} ${ebGaramond.variable} font-sans antialiased`}
             >
+                {/*
+                  Runtime backend URL (see app/env.js/route.ts). beforeInteractive
+                  is required, not cosmetic: lib/mikeApi.ts resolves the base URL
+                  once at module scope, so this has to run before the application
+                  bundle does. It is a no-op when API_BASE_URL is unset, which is
+                  the docker-compose case.
+                */}
+                <Script src="/env.js" strategy="beforeInteractive" />
                 <Providers>{children}</Providers>
             </body>
         </html>

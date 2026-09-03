@@ -3,6 +3,12 @@
 Runs the whole stack — Postgres + backend + frontend — with Docker Compose on a
 Linux server, reachable from any machine on the network at `http://<server-ip>:3000`.
 
+> Deploying to Kubernetes instead? See **[KUBERNETES.md](KUBERNETES.md)**. The
+> topology there is different in one way that matters — a single hostname with
+> `/api` routed to the backend, rather than the browser calling port 3001
+> directly — and several of the operational notes below (the startup probes, the
+> Docker subnet collision) still apply.
+
 ## How it fits together
 
 - **frontend** (Next.js) on port **3000** — what users open.

@@ -244,6 +244,36 @@ DOC/DOCX to PDF; locally you need LibreOffice on PATH (or `SOFFICE_BINARY_PATH`)
 `GET /health` is open; `GET /health/smtp` requires auth and runs a real `transporter.verify()`
 without sending mail.
 
+### Kubernetes (UAT and production)
+
+`k8s/` is plain kustomize — `base/` plus `overlays/uat` and `overlays/prod` — deployed by
+`.gitlab-ci.yml`. `docs/KUBERNETES.md` is the operational guide; prefer pointing at it over
+restating manifest values in prose.
+
+Three things differ from the compose shape and are easy to break:
+
+- **One hostname, split by path.** The ingress routes `/api` to the backend and everything else
+  to the frontend, so the browser is same-origin and there is no CORS. The backend strips the
+  prefix itself (`API_BASE_PATH`, `lib/basePath.ts`) rather than relying on a controller-specific
+  rewrite annotation. Its counterpart is `API_BASE_URL` in the *frontend's* environment; the two
+  must agree.
+- **The frontend's API base is resolved at request time**, not build time: `app/env.js/route.ts`
+  reads `API_BASE_URL` and `app/layout.tsx` loads it `beforeInteractive`, because
+  `lib/mikeApi.ts` resolves the base once at module scope. `NEXT_PUBLIC_*` would be inlined by
+  `next build`, which would mean one image per environment. Don't "simplify" it back.
+- **`src/scripts/migrate.ts` owns schema changes off compose.** Kubernetes has no equivalent of
+  the Postgres entrypoint hook that seeds a new volume, so a Job runs this from the backend image
+  (which is why the Dockerfile ships `schema.sql`, `db/` and `migrations/`). It picks the fresh
+  path (shim + `schema.sql` + baseline every filename) or the incremental one by looking for
+  `public.user_profiles`, tracks state in `public.schema_migrations`, and **refuses** to run
+  against a database that has the tables but no ledger — replaying the older data migrations over
+  live rows would do damage. That case needs `--baseline`.
+
+`index.ts` handles SIGTERM by refusing new connections and letting in-flight requests finish;
+`terminationGracePeriodSeconds` is 900 because an answer can stream for ten minutes and a rollout
+otherwise cuts every one of them off. `/health` is liveness (process only, deliberately no DB
+check — restarting does not fix a database outage) and `/health/ready` is readiness (does check).
+
 ## Conventions
 
 - Per `CONTRIBUTING.md`: keep changes small and focused; update `backend/.env.example` and the

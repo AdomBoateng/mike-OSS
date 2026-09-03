@@ -27,5 +27,13 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 
+# The SQL a fresh or upgrading database needs. Kubernetes has no equivalent of
+# the Postgres entrypoint hook docker-compose uses to seed a new volume, so the
+# migration Job runs `node dist/scripts/migrate.js` from this same image and
+# reads these paths. See docs/KUBERNETES.md.
+COPY schema.sql ./schema.sql
+COPY db ./db
+COPY migrations ./migrations
+
 EXPOSE 3001
 CMD ["node", "dist/index.js"]

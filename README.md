@@ -25,6 +25,8 @@ version, use upstream rather than this fork.
 - `backend/schema.sql` — full schema for a fresh database
 - `backend/migrations/` — dated incremental migrations for an existing database
 - `docs/DEPLOYMENT.md` — Docker deployment and the production checklist
+- `docs/KUBERNETES.md` — deploying to Kubernetes (UAT and production), and the GitLab pipeline that does it
+- `k8s/` — kustomize manifests for those two environments
 - `docs/self-hosting-roadmap.md` — what was migrated off the managed services, and what's left
 - `docs/adding-api-sources.md` — how to add another external API as assistant tools
 - `docs/ghana-legislation-source.md` — where the Ghana legislation text comes from, how it is accessed, and its limits

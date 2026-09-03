@@ -6,6 +6,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "db:migrate": "tsx src/scripts/migrate.ts",
+    "db:migrate:dry-run": "tsx src/scripts/migrate.ts --dry-run",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "test:integration": "node --import tsx --test \"src/**/*.integration.ts\""
   },

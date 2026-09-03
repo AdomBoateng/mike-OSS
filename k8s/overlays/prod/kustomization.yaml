@@ -1,0 +1,49 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mike-prod
+
+resources:
+  - namespace.yaml
+  - poddisruptionbudget.yaml
+  - ../../base
+
+# CI rewrites these with:
+#   kustomize edit set image mike-backend=$CI_REGISTRY_IMAGE/backend:$TAG
+images:
+  - name: mike-backend
+    newTag: latest
+  - name: mike-frontend
+    newTag: latest
+
+replicas:
+  - name: mike-backend
+    count: 2
+  - name: mike-frontend
+    count: 2
+
+patches:
+  - target:
+      kind: Ingress
+      name: mike
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: mike.quantumgroupgh.com
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts:
+              - mike.quantumgroupgh.com
+            secretName: mike-prod-tls
+
+  - target:
+      kind: ConfigMap
+      name: mike-config
+    patch: |-
+      - op: add
+        path: /data/APP_PUBLIC_URL
+        value: https://mike.quantumgroupgh.com
+      - op: add
+        path: /data/FRONTEND_URL
+        value: https://mike.quantumgroupgh.com

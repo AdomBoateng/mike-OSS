@@ -16,6 +16,8 @@ import { authRouter } from "./routes/auth";
 import { requireAuth } from "./middleware/auth";
 import { smtpEnabled, verifySmtp, resolveSmtpConfig } from "./lib/mailer";
 import { assertConfig, assertDependenciesReachable } from "./lib/config";
+import { normalizeBasePath, stripBasePath } from "./lib/basePath";
+import { query as dbQuery } from "./lib/db";
 
 // Safety net: Express 4 does not catch rejections thrown inside async route
 // handlers, and Node crashes on an unhandled rejection. Log and keep the server
@@ -121,6 +123,23 @@ function jsonLimitForPath(path: string): string {
 app.disable("x-powered-by");
 app.set("trust proxy", envInt("TRUST_PROXY_HOPS", 1));
 
+// Mounted under a path prefix when one hostname serves both apps and the
+// ingress routes /api to this service (see docs/KUBERNETES.md). Stripping it
+// here rather than in the ingress keeps the manifests controller-agnostic.
+// Empty by default, which is the port-per-service shape docker-compose uses.
+//
+// This must run before the rate limiters below: they key on the path, and a
+// limiter registered for "/auth/login" never matches "/api/auth/login".
+const API_BASE_PATH = normalizeBasePath(process.env.API_BASE_PATH);
+if (API_BASE_PATH) {
+  app.use((req, _res, next) => {
+    const stripped = stripBasePath(req.url, API_BASE_PATH);
+    if (stripped !== null) req.url = stripped;
+    next();
+  });
+  console.log(`[server] API mounted under ${API_BASE_PATH}`);
+}
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -210,6 +229,26 @@ app.use("/auth", authRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// Readiness, for an orchestrator that decides whether to send this pod traffic.
+// /health above is liveness: it says the process is up, which a pod whose
+// database has gone away will happily keep saying while failing every real
+// request. Kubernetes takes a pod out of the Service on this one WITHOUT
+// restarting it, which is the right response to the database being briefly
+// away — a restart would not have helped and the pod recovers on its own.
+app.get("/health/ready", async (_req, res) => {
+  try {
+    await dbQuery("select 1", []);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(503).json({
+      ok: false,
+      detail: `database unreachable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    });
+  }
+});
+
 // SMTP self-test: confirms config + connectivity + auth (transporter.verify())
 // WITHOUT sending mail. Auth-required so it isn't an open network probe.
 app.get("/health/smtp", requireAuth, async (_req, res) => {
@@ -241,6 +280,46 @@ app.get("/health/smtp", requireAuth, async (_req, res) => {
   }
 });
 
+// Graceful shutdown.
+//
+// Kubernetes sends SIGTERM and waits terminationGracePeriodSeconds before
+// SIGKILL; Node's default action for SIGTERM is to exit immediately. Here that
+// would cut every answer being streamed at that moment off mid-sentence, and an
+// answer can legitimately take ten minutes — during a rolling update "a request
+// is in flight" is the normal case, not a rare one.
+//
+// So: stop listening, hang up connections that are merely idle between
+// keep-alive requests, and let the ones actually mid-response finish. The pod
+// has already been removed from the Service by the time this runs, so nothing
+// new arrives. If the grace period runs out first, Kubernetes kills us anyway,
+// which is no worse than exiting on the signal.
+let httpServer: ReturnType<typeof app.listen> | undefined;
+let shuttingDown = false;
+
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (!httpServer) {
+    console.log(`[server] ${signal} received before listening; exiting`);
+    process.exit(0);
+  }
+  console.log(
+    `[server] ${signal} received; refusing new connections and waiting for ` +
+      `in-flight requests to finish`,
+  );
+  httpServer.close(() => {
+    console.log("[server] all connections closed; exiting");
+    process.exit(0);
+  });
+  // Without this, a browser holding an idle keep-alive socket open keeps
+  // close() waiting for the full grace period even though nothing is happening
+  // on it.
+  httpServer.closeIdleConnections();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
 async function start(): Promise<void> {
   assertConfig();
   // Config only proves S3 and LDAP are *configured*; this proves they answer.
@@ -258,6 +337,7 @@ async function start(): Promise<void> {
       resolve();
     });
     server.once("error", reject);
+    httpServer = server;
   });
 }
 

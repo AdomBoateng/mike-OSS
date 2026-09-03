@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mike-backend
+  labels:
+    app.kubernetes.io/name: mike
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mike
+      app.kubernetes.io/component: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mike
+        app.kubernetes.io/component: backend
+    spec:
+      # An answer can legitimately take ten minutes, so during a rollout "a
+      # request is in flight" is the normal case, not a rare one. index.ts
+      # handles SIGTERM by refusing new connections and letting the running ones
+      # finish; this is how long it gets before SIGKILL. Cut it short and users
+      # watching a redraft see it stop mid-sentence whenever anyone deploys.
+      terminationGracePeriodSeconds: 900
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: backend
+          # Replaced per environment by CI (kustomize edit set image).
+          image: mike-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: mike-config
+            - secretRef:
+                name: mike-secrets
+          env:
+            # LibreOffice and poppler both write under $HOME, and the image root
+            # is not writable by uid 1000. Without this every DOCX-to-PDF
+            # conversion fails once the pod stops running as root.
+            - name: HOME
+              value: /scratch
+          volumeMounts:
+            - name: scratch
+              mountPath: /scratch
+            - name: tmp
+              mountPath: /tmp
+          # Startup is deliberately slow to fail: before binding a port the
+          # process proves it can reach S3 and LDAP, retrying network faults
+          # 3x/2s each so a container that starts before its network does not
+          # die on a blip. Give it room — 30 x 5s — rather than letting the
+          # kubelet restart it partway through its own retries.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          # Liveness asks only whether the process is alive. It deliberately does
+          # NOT touch the database: restarting a pod does not fix a database
+          # outage, it just adds a crash loop on top of one.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness does check the database, because a pod that cannot reach it
+          # should stop receiving traffic without being restarted — and should
+          # start receiving it again on its own when the database comes back.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # The headroom is for LibreOffice (DOCX -> PDF) and pdftoppm
+            # (rasterising scanned legislation before OCR). Both are far heavier
+            # than serving a request and both run inside this container.
+            requests:
+              cpu: "250m"
+              memory: "768Mi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mike-backend
+  labels:
+    app.kubernetes.io/name: mike
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mike
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http

@@ -1,0 +1,63 @@
+# Bring the database up to the schema this image expects.
+#
+# Run this to completion BEFORE the Deployments roll — the CI deploy job does
+# exactly that. It runs the backend image with a different command, so the SQL
+# it applies is always the SQL that shipped with the code being deployed.
+#
+# The script decides for itself whether the database is fresh (create the auth
+# shim, load schema.sql, record every migration as applied) or existing (apply
+# only the dated migrations it has not seen), so this same Job is what a brand
+# new UAT namespace runs and what a routine production deploy runs. It takes an
+# advisory lock, so a retried pipeline racing itself is safe.
+#
+# The Job name is fixed and a completed Job's pod template is immutable, so the
+# deploy script deletes any previous one first.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mike-migrate
+  labels:
+    app.kubernetes.io/name: mike
+    app.kubernetes.io/component: migrate
+spec:
+  # Keep the pod around for an hour so its logs can be read after a failure.
+  ttlSecondsAfterFinished: 3600
+  # Two retries. A migration that fails twice is a bad migration, not a blip,
+  # and retrying it forever just delays someone looking at the logs.
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mike
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: migrate
+          # Replaced per environment by CI (kustomize edit set image) — the same
+          # image tag as the backend Deployment being rolled out.
+          image: mike-backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["node", "dist/scripts/migrate.js"]
+          # Only the Secret: this needs DATABASE_URL and nothing else. It
+          # deliberately does not load mike-config, so a config change cannot
+          # alter what the migration does.
+          envFrom:
+            - secretRef:
+                name: mike-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mike-uat
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+# CI rewrites these with:
+#   kustomize edit set image mike-backend=$CI_REGISTRY_IMAGE/backend:$TAG
+# so the tag committed here is only what a manual `kubectl apply -k` would get.
+images:
+  - name: mike-backend
+    newTag: latest
+  - name: mike-frontend
+    newTag: latest
+
+# UAT carries no real traffic, so one replica each. Note this makes a rollout a
+# brief outage rather than seamless — which is the right trade here, but is why
+# production keeps two.
+replicas:
+  - name: mike-backend
+    count: 1
+  - name: mike-frontend
+    count: 1
+
+patches:
+  - target:
+      kind: Ingress
+      name: mike
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: mike-uat.quantumgroupgh.com
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts:
+              - mike-uat.quantumgroupgh.com
+            secretName: mike-uat-tls
+
+  - target:
+      kind: ConfigMap
+      name: mike-config
+    patch: |-
+      - op: add
+        path: /data/APP_PUBLIC_URL
+        value: https://mike-uat.quantumgroupgh.com
+      # CORS is same-origin under path routing, so this only has to name the one
+      # host the app is served from. Never "*" on anything reachable off the LAN.
+      - op: add
+        path: /data/FRONTEND_URL
+        value: https://mike-uat.quantumgroupgh.com

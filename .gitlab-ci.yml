@@ -1,0 +1,200 @@
+# Mike — build, scan, and deploy to Kubernetes.
+#
+# The shape:
+#
+#   test   -> unit tests and a real production build of both apps
+#   build  -> one image per app, tagged with the commit SHA
+#   deploy -> migrate the database, then roll the Deployments
+#
+# Images are tagged with $CI_COMMIT_SHORT_SHA, never only `latest`, so that
+# "which build is in production" has an answer and a rollback has something to
+# roll back to.
+#
+# The database migration runs as its own Job, from the same backend image, and
+# must finish before the Deployments roll. See k8s/base/migrate/ and
+# docs/KUBERNETES.md.
+
+stages:
+  - test
+  - secret-detection
+  - build
+  - deploy
+
+variables:
+  # Both images live under this project's container registry.
+  BACKEND_IMAGE: $CI_REGISTRY_IMAGE/backend
+  FRONTEND_IMAGE: $CI_REGISTRY_IMAGE/frontend
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  SECRET_DETECTION_ENABLED: "true"
+
+include:
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+secret_detection:
+  stage: secret-detection
+
+# ---------------------------------------------------------------------------
+# test
+# ---------------------------------------------------------------------------
+
+.node:
+  image: node:22-bookworm-slim
+  cache:
+    key:
+      files:
+        - backend/package-lock.json
+        - frontend/package-lock.json
+    paths:
+      - backend/node_modules
+      - frontend/node_modules
+
+backend:test:
+  extends: .node
+  stage: test
+  script:
+    - npm ci --prefix backend
+    # tsc is the typecheck as well as the build; a type error fails here rather
+    # than in the image build, where the feedback is slower and uglier.
+    - npm run build --prefix backend
+    - npm test --prefix backend
+  # The integration tests (src/**/*.integration.ts) are NOT run here. They talk
+  # to a real database, LDAP and S3, and self-skip when those are absent, so in
+  # CI they would report a pass having tested nothing — which is worse than not
+  # running them. Run them against UAT after a deploy instead.
+
+frontend:build:
+  extends: .node
+  stage: test
+  script:
+    - npm ci --prefix frontend
+    - npm run lint --prefix frontend
+    # NEXT_PUBLIC_API_BASE_URL is deliberately NOT set: the backend URL is read
+    # at request time from the container's environment (app/env.js/route.ts), so
+    # one image serves UAT and production. Setting it here would bake UAT's URL
+    # into the artifact production runs.
+    - npm run build --prefix frontend
+
+# ---------------------------------------------------------------------------
+# build
+# ---------------------------------------------------------------------------
+#
+# Kaniko rather than docker-in-docker: it needs no privileged runner. If your
+# runners already have a Docker socket, a `docker build` job works just as well
+# — the only thing that matters downstream is the image name and tag.
+
+.kaniko:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  before_script:
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+build:backend:
+  extends: .kaniko
+  script:
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR/backend"
+      --dockerfile "$CI_PROJECT_DIR/backend/Dockerfile"
+      --destination "$BACKEND_IMAGE:$IMAGE_TAG"
+      --destination "$BACKEND_IMAGE:latest"
+      --cache=true
+
+build:frontend:
+  extends: .kaniko
+  script:
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR/frontend"
+      --dockerfile "$CI_PROJECT_DIR/frontend/Dockerfile"
+      --destination "$FRONTEND_IMAGE:$IMAGE_TAG"
+      --destination "$FRONTEND_IMAGE:latest"
+      --cache=true
+
+# ---------------------------------------------------------------------------
+# deploy
+# ---------------------------------------------------------------------------
+#
+# Requires two CI/CD variables per environment, both masked and (for production)
+# protected:
+#   KUBE_CONFIG_UAT  / KUBE_CONFIG_PROD   base64-encoded kubeconfig
+#
+# The Secret holding credentials (mike-secrets) is NOT managed here. It is
+# created once per namespace out of band — see k8s/secret.example.yaml. Keeping
+# it out of the pipeline means a compromised runner cannot read the directory
+# bind password out of a job log.
+
+.deploy:
+  stage: deploy
+  image: registry.gitlab.com/gitlab-org/cluster-integration/cluster-applications:latest
+  before_script:
+    - mkdir -p ~/.kube
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+    - chmod 600 ~/.kube/config
+    - kubectl version --client
+  script:
+    # 1. Pin the images this deploy is rolling out.
+    - cd "k8s/overlays/$ENVIRONMENT_NAME"
+    - kustomize edit set image "mike-backend=$BACKEND_IMAGE:$IMAGE_TAG"
+    - kustomize edit set image "mike-frontend=$FRONTEND_IMAGE:$IMAGE_TAG"
+    - cd migrate
+    - kustomize edit set image "mike-backend=$BACKEND_IMAGE:$IMAGE_TAG"
+    - cd "$CI_PROJECT_DIR"
+
+    # 2. Migrate FIRST, on its own, and wait for it. A completed Job's pod
+    #    template is immutable, so the previous one has to go before this one
+    #    can be created. The script itself is idempotent and takes an advisory
+    #    lock, so a re-run finds nothing to do rather than doing it twice.
+    - kubectl -n "$KUBE_NAMESPACE" delete job mike-migrate --ignore-not-found --wait=true
+    - kubectl apply -k "k8s/overlays/$ENVIRONMENT_NAME/migrate"
+    - |
+      if ! kubectl -n "$KUBE_NAMESPACE" wait --for=condition=complete job/mike-migrate --timeout=600s; then
+        echo "--- migration failed; logs follow ---"
+        kubectl -n "$KUBE_NAMESPACE" logs job/mike-migrate --tail=200 || true
+        exit 1
+      fi
+    - kubectl -n "$KUBE_NAMESPACE" logs job/mike-migrate --tail=100
+
+    # 3. Roll the app. maxUnavailable is 0, so the old pods keep serving until
+    #    the new ones are ready.
+    - kubectl apply -k "k8s/overlays/$ENVIRONMENT_NAME"
+    # Longer than the backend's own startup: it proves it can reach S3 and LDAP
+    # before it binds a port, retrying network faults, and the grace period on
+    # the outgoing pods lets in-flight answers finish.
+    - kubectl -n "$KUBE_NAMESPACE" rollout status deployment/mike-backend --timeout=900s
+    - kubectl -n "$KUBE_NAMESPACE" rollout status deployment/mike-frontend --timeout=300s
+
+deploy:uat:
+  extends: .deploy
+  variables:
+    ENVIRONMENT_NAME: uat
+    KUBE_NAMESPACE: mike-uat
+    KUBE_CONFIG: $KUBE_CONFIG_UAT
+  environment:
+    name: uat
+    url: https://mike-uat.quantumgroupgh.com
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy:prod:
+  extends: .deploy
+  variables:
+    ENVIRONMENT_NAME: prod
+    KUBE_NAMESPACE: mike-prod
+    KUBE_CONFIG: $KUBE_CONFIG_PROD
+  environment:
+    name: production
+    url: https://mike.quantumgroupgh.com
+  rules:
+    # Tag-only, and still manual. A production deploy should name a version
+    # somebody decided to ship, not whatever last merged.
+    - if: $CI_COMMIT_TAG
+      when: manual
+      allow_failure: false
