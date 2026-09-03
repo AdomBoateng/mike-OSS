@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Optional add-on, applied per namespace rather than pulled into the app
+# overlays: web search is off unless SEARXNG_BASE_URL is set, and an environment
+# is entitled to run without it.
+#
+#   kubectl -n mike-uat apply -k k8s/searxng
+#
+# networkpolicy.yaml is deliberately not listed — see the comment in that file.
+resources:
+  - searxng.yaml

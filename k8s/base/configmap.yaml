@@ -44,3 +44,10 @@ data:
   # Must match the context window of the model actually being served: vLLM's
   # /models does not report max_model_len, so it cannot be detected.
   CONTEXT_WINDOW_TOKENS: "32768"
+
+  # Open-web search. Commented out because the tool is correctly absent until an
+  # instance exists — there is deliberately no public fallback, since falling
+  # back would send the firm's queries to a third party. Uncomment after
+  # applying k8s/searxng. A Service address inside the cluster is not a secret,
+  # which is why this lives here and not in mike-secrets.
+  # SEARXNG_BASE_URL: "http://searxng:8080"

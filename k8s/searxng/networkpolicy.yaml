@@ -1,0 +1,36 @@
+# Only the backend may call SearXNG.
+#
+# ClusterIP already keeps it off the ingress, but ClusterIP is not a boundary —
+# any pod in the cluster can reach it. Since this thing will fetch a URL on
+# behalf of whoever asks, "any pod in the cluster" is a larger blast radius than
+# it needs.
+#
+# Included as a separate file rather than in the kustomization because it does
+# nothing unless the CNI enforces NetworkPolicy (Calico, Cilium, Antrea and
+# similar do; some managed defaults do not). A policy that is silently ignored
+# is worse than none, because it reads like protection. Confirm enforcement,
+# then apply:
+#
+#   kubectl -n mike-uat apply -f k8s/searxng/networkpolicy.yaml
+#
+# Egress is deliberately unrestricted: the entire point of this pod is to reach
+# search engines on the open internet, and enumerating them is not possible.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: searxng-allow-backend-only
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: searxng
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mike
+              app.kubernetes.io/component: backend
+      ports:
+        - protocol: TCP
+          port: 8080

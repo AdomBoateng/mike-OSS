@@ -10,7 +10,13 @@ const REAL_ENV = { ...process.env };
 let server: http.Server;
 let baseUrl = "";
 /** What the stand-in instance should do for the next request. */
-let mode: "ok" | "duplicates" | "forbidden" | "garbage" = "ok";
+let mode:
+  | "ok"
+  | "duplicates"
+  | "forbidden"
+  | "garbage"
+  | "all_engines_down"
+  | "genuinely_empty" = "ok";
 
 before(async () => {
   server = http.createServer((_req, res) => {
@@ -21,6 +27,25 @@ before(async () => {
     if (mode === "garbage") {
       res.writeHead(200, { "Content-Type": "text/html" });
       return res.end("<html>not json</html>");
+    }
+    if (mode === "all_engines_down") {
+      // What a real instance returns when every upstream engine refuses it —
+      // observed from a datacenter IP, where CAPTCHAs are routine.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({
+          results: [],
+          unresponsive_engines: [
+            ["duckduckgo", "CAPTCHA"],
+            ["brave", "Suspended: too many requests"],
+            "startpage",
+          ],
+        }),
+      );
+    }
+    if (mode === "genuinely_empty") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ results: [], unresponsive_engines: [] }));
     }
     const results =
       mode === "duplicates"
@@ -149,6 +174,30 @@ describe("searchWeb", () => {
     const out = await searchWeb({ query: "q" });
     assert.equal(out.results.length, 0);
     assert.ok(out.error);
+  });
+
+  test("every engine failing is an error, not an empty result", async () => {
+    // These must not look the same to the model. Told "the web found nothing",
+    // it reports that to a lawyer as a finding; told the search broke, it says
+    // so. Engines CAPTCHA-ing a datacenter IP is the usual cause.
+    mode = "all_engines_down";
+    configure();
+    const out = await searchWeb({ query: "q" });
+    assert.equal(out.results.length, 0);
+    assert.match(out.error ?? "", /no engine answered/i);
+    assert.match(out.error ?? "", /duckduckgo \(CAPTCHA\)/);
+    assert.match(out.error ?? "", /brave \(Suspended: too many requests\)/);
+    // A bare string entry, not a pair, still names the engine.
+    assert.match(out.error ?? "", /startpage/);
+    assert.match(out.error ?? "", /not a sign that nothing exists/i);
+  });
+
+  test("a genuinely empty result stays an empty result", async () => {
+    mode = "genuinely_empty";
+    configure();
+    const out = await searchWeb({ query: "q" });
+    assert.equal(out.results.length, 0);
+    assert.equal(out.error, undefined);
   });
 
   test("an empty query does not reach the network", async () => {

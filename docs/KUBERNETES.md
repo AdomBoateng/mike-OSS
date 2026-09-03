@@ -91,18 +91,49 @@ which of them are secret and therefore belong here rather than in
 `k8s/base/configmap.yaml`. If the cluster has SealedSecrets or External Secrets,
 use it — an encrypted SealedSecret can live in this repo, a plain Secret cannot.
 
-Open-web search is optional. To run SearXNG in-cluster (the recommendation —
-it is one application's internal dependency, holds nothing worth keeping, and in
-here it gets a ClusterIP and no Ingress):
+## Open-web search (optional)
+
+The `web_search` tool is offered only when `SEARXNG_BASE_URL` is set. There is
+deliberately no public fallback — falling back would send the firm's queries to
+somebody else's instance, which is the whole reason for choosing SearXNG.
+
+Run it in-cluster. It is one application's internal dependency, holds nothing
+worth keeping, and in here it gets a ClusterIP and no Ingress; a separate Docker
+host would be another machine to patch and firewall for no gain.
 
 ```bash
-kubectl -n mike-uat create secret generic searxng-secret --from-literal=SEARXNG_SECRET="$(openssl rand -hex 32)"
-kubectl -n mike-uat apply -f k8s/searxng/searxng.yaml
+kubectl -n mike-uat create secret generic searxng-secret \
+  --from-literal=SEARXNG_SECRET="$(openssl rand -hex 32)"
+kubectl -n mike-uat apply -k k8s/searxng
 ```
 
-and set `SEARXNG_BASE_URL=http://searxng:8080` in `mike-secrets`. Do not put an
-Ingress in front of it: an open SearXNG is an open proxy, and anyone who reaches
-it can make this network issue arbitrary outbound requests.
+Then uncomment `SEARXNG_BASE_URL` in `k8s/base/configmap.yaml` and re-apply the
+overlay. It is in the ConfigMap rather than the Secret because a Service address
+inside the cluster is not a credential.
+
+**Do not put an Ingress in front of it.** An open SearXNG is an open proxy:
+anyone who reaches it can make this network issue arbitrary outbound requests.
+`k8s/searxng/networkpolicy.yaml` narrows that further to the backend pods only,
+and is a separate file because it silently does nothing unless the CNI enforces
+NetworkPolicy — check that before trusting it.
+
+Three things worth knowing, all found by running the image rather than reading
+about it:
+
+- **The JSON format is off by default.** A stock instance serves HTML only and
+  every search comes back 403. The ConfigMap sets `search.formats: [html, json]`;
+  `lib/webSearch.ts` turns a 403 into a message naming that setting, because the
+  bare status tells an operator nothing.
+- **The secret key must come from the Secret.** The image generates a random one
+  only when `settings.yml` is absent — and the ConfigMap supplies it, so that
+  never happens. With `SEARXNG_SECRET` unset, the instance would run on the
+  placeholder committed to this repo.
+- **Engines will refuse a datacenter IP.** On a first live query from a fresh
+  instance, DuckDuckGo returned a CAPTCHA and Brave and Startpage both suspended
+  it for too many requests; the results came from Google CSE. This is normal and
+  intermittent. `searchWeb()` distinguishes "every engine failed" from "no
+  results", so the assistant says the search broke rather than reporting to a
+  lawyer that the web knows nothing about their question.
 
 ## The database
 
