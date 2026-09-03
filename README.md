@@ -1,93 +1,197 @@
-# Mike-OSS
+# Mike — self-hosted
 
+Mike is a legal document assistant: a Next.js frontend, an Express + TypeScript backend,
+and an assistant that reads, drafts, and edits DOCX/PDF documents with real Word tracked
+changes.
 
+**This is a self-hosting fork.** Upstream Mike ([mikeoss.com](https://mikeoss.com)) runs on
+managed services; this checkout replaces every one of them with infrastructure you operate:
 
-## Getting started
+| Upstream | Here |
+| --- | --- |
+| Supabase Auth | LDAP bind (FreeIPA) + our own HS256 JWT session |
+| Supabase Postgres / PostgREST | self-hosted Postgres, via a query-builder shim over `pg` |
+| Cloudflare R2 | any S3-compatible endpoint |
+| Supabase-hosted email | your own SMTP server |
+| Anthropic / Gemini / OpenAI | a self-hosted OpenAI-compatible endpoint (vLLM) |
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+There is **no signup** — accounts come from the directory. If you want the managed-service
+version, use upstream rather than this fork.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+## Contents
 
-## Add your files
+- `frontend/` — Next.js application
+- `backend/` — Express API, document processing, and the database schema
+- `backend/schema.sql` — full schema for a fresh database
+- `backend/migrations/` — dated incremental migrations for an existing database
+- `docs/DEPLOYMENT.md` — Docker deployment and the production checklist
+- `docs/KUBERNETES.md` — deploying to Kubernetes (UAT and production), and the GitLab pipeline that does it
+- `k8s/` — kustomize manifests for those two environments
+- `docs/self-hosting-roadmap.md` — what was migrated off the managed services, and what's left
+- `docs/adding-api-sources.md` — how to add another external API as assistant tools
+- `docs/ghana-legislation-source.md` — where the Ghana legislation text comes from, how it is accessed, and its limits
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## Prerequisites
 
+- Node.js 20 or newer, npm, git
+- Docker + Compose (the supported way to run the stack)
+- An LDAP directory the server can reach (developed against FreeIPA)
+- An S3-compatible bucket (self-hosted MinIO/Ceph, AWS S3, or R2)
+- An OpenAI-compatible model endpoint — vLLM, Ollama, LM Studio, TGI
+- LibreOffice, for DOC/DOCX → PDF conversion, and poppler-utils (`pdftoppm`) for OCR of scanned
+  legislation — both bundled in the backend image; install locally for `npm run dev`
+- Optional: an SMTP server for collaborator invitations
+- Optional: a CourtListener API token for US case-law lookup
+
+## Configure
+
+Everything is driven by one file:
+
+```bash
+cp backend/.env.example backend/.env
+$EDITOR backend/.env
 ```
-cd existing_repo
-git remote add origin https://gitlab.quantumgroupgh.com/thequantumgroup/ai-team/mike-oss.git
-git branch -M main
-git push -uf origin main
+
+`backend/.env.example` is the reference — it documents every variable, which are required,
+and which only disable a feature when absent. The essentials:
+
+- **Three secrets**, each a different random value (`openssl rand -hex 32`):
+  `SESSION_JWT_SECRET`, `DOWNLOAD_SIGNING_SECRET`, `USER_API_KEYS_ENCRYPTION_SECRET`
+- **`DATABASE_URL`** — overridden by compose for the container network
+- **`LDAP_*`** — directory URL, a service bind account, and the user base DN
+- **`S3_*`** — endpoint, credentials, bucket (legacy `R2_*` names still work)
+- **`CUSTOM_LLM_BASE_URL`** / **`CUSTOM_LLM_API_KEY`** — your model endpoint
+- **`APP_PUBLIC_URL`** — the address users browse to, used for links in email
+- **`SMTP_*`** — optional; without it, sharing still works but sends no invitation
+
+With `NODE_ENV=production` the backend validates all of this at startup and **exits** if
+something required is missing, still holds a placeholder, or reuses another secret's value.
+Outside production the same problems are printed as warnings, so a partial local setup runs.
+
+The frontend needs no env file. It derives the API URL from the page host at runtime, so one
+build serves any server address; set `NEXT_PUBLIC_API_BASE_URL` only to pin a fixed backend.
+
+## Run
+
+```bash
+docker compose up -d --build
 ```
 
-## Integrate with your tools
+Open `http://<server-ip>:3000` and sign in with directory credentials. **Both 3000 and 3001
+must be reachable from client machines** — the browser calls the API directly.
 
-* [Set up project integrations](https://gitlab.quantumgroupgh.com/thequantumgroup/ai-team/mike-oss/-/settings/integrations)
+On first start, an empty Postgres volume loads `backend/db/initdb/00-auth-shim.sql` (which
+recreates the `auth.users` table and roles the Supabase-era schema expects) and then
+`backend/schema.sql`, unmodified. For an existing database, don't run the schema file — apply
+the dated files in `backend/migrations/` in filename order instead.
 
-## Collaborate with your team
+For production, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): it adds a compose overlay that
+locks CORS, unpublishes the Postgres port, and takes the DB password from the environment,
+plus a pre-flight checklist covering TLS, backups, and secret rotation.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## Develop
 
-## Test and Deploy
+```bash
+npm install --prefix backend && npm install --prefix frontend
 
-Use the built-in continuous integration in GitLab.
+npm run dev   --prefix backend     # port 3001
+npm run dev   --prefix frontend    # port 3000
+```
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+Postgres still has to be running — `docker compose up -d postgres` gives you one on host
+port 5433, matching the `DATABASE_URL` in `.env.example`.
 
-***
+```bash
+npm run build --prefix backend     # tsc -> backend/dist
+npm run build --prefix frontend    # next build
+npm run lint  --prefix frontend
+```
 
-# Editing this README
+Tests use the Node built-in runner via `tsx`:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+```bash
+npm test --prefix backend                 # unit tests, always safe to run
+npm run test:integration --prefix backend # hits a real DB / S3 / LDAP
+```
 
-## Suggestions for a good README
+Integration tests load `.env` and skip themselves when the relevant variable is absent, so
+they're safe to run anywhere. A single file:
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```bash
+node --import tsx --test backend/src/lib/storage.test.ts
+```
 
-## Name
-Choose a self-explaining name for your project.
+## Models
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Models come from `{CUSTOM_LLM_BASE_URL}/models` — nothing is hardcoded, so whatever your
+endpoint serves is what the picker offers. Ids are namespaced `custom/<id>` internally and
+the prefix is stripped before the endpoint is called.
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+Display names for known ids are mapped in `backend/src/lib/llm/models.ts`; an unmapped model
+still appears, labelled with its raw id. A base URL and key can also be set per account under
+**Account > Models & API Keys**, which overrides the instance-wide value.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+## Legal research
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+The assistant can research two jurisdictions. Each is a separate per-user toggle under
+**Account > Features > Legal Research**, both on by default, and each can be turned off without
+affecting the other.
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+### Ghana legislation
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+Acts, and to a lesser extent Instruments and older Decrees, from the
+[Parliament of Ghana Library Repository](https://repository.parliament.gh/). The API is open, so
+nothing needs configuring — set `GHANA_LAW_ENABLED=false` to switch it off instance-wide.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+Know what it is before relying on it:
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+- Text is **as enacted**. Amendments are separate Acts and are not folded in; the consolidated
+  "Revised Edition" series is scanned images. The assistant surfaces the amendment chain and says
+  the text may have changed, but nothing here states the law in force.
+- Roughly a third of the collection is scanned with no machine-readable text, and the year does not
+  predict which. Those pages are rasterised and transcribed by the multimodal model, and the result
+  is marked as **OCR** — accurate but not authoritative, and to be checked against the original
+  before it is relied on. Only the first pages of a long scan are transcribed per request. Anything
+  that cannot be transcribed at all is reported as unreadable rather than as empty.
+- Coverage of subsidiary legislation is thin (a handful of Legislative Instruments), so a search
+  finding nothing does not mean no such law exists.
+- There is **no Ghanaian case law** source. Legislation only.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Extracted text is cached in the S3 bucket under `ghana-law/items/`. A cold fetch downloads and
+extracts a PDF and can take 20 seconds, so storage being configured matters more here than
+elsewhere.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+### CourtListener (optional)
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+US case law: verify citations, fetch cases, and search opinions through CourtListener. Set
+`COURTLISTENER_API_TOKEN` in `backend/.env` and restart, or let users add their own token
+under **Account > Models & API Keys**. Fresh databases already include the supporting tables.
 
-## License
-For open source projects, say how it is licensed.
+Bulk data is optional. With `COURTLISTENER_BULK_DATA_ENABLED=true`, Mike reads locally
+imported citation and cluster tables plus cached opinion JSON in object storage before
+falling back to the live API. Leave it `false` if you haven't imported anything.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+## Troubleshooting
+
+**The backend container restart-loops.** Read its logs first: with `NODE_ENV=production` the
+startup check prints `[config] ERROR` lines naming exactly which variable is missing or
+invalid before it exits.
+
+**Nobody can sign in.** The backend must be able to reach the LDAP host, and the service bind
+account must be able to search `LDAP_USER_BASE_DN`. `npm run test:integration --prefix backend`
+exercises the bind and search directly.
+
+**The model picker is empty.** The backend can't reach `CUSTOM_LLM_BASE_URL`. From inside the
+container, since `localhost` there is not your host:
+`docker compose exec backend node -e "fetch(process.env.CUSTOM_LLM_BASE_URL+'/models').then(r=>console.log(r.status))"`
+
+**Invitation emails never arrive.** Sign in, then call `GET /health/smtp` — it runs a real
+handshake and reports the failure without sending mail. If links in delivered mail look
+wrong, set `APP_PUBLIC_URL`; `FRONTEND_URL` is a CORS allowlist and can't serve as a link.
+
+**DOC or DOCX conversion fails.** The backend image ships LibreOffice. Running outside Docker,
+put `soffice` on `PATH` or set `SOFFICE_BINARY_PATH`.
+
+## Licence
+
+AGPL-3.0-only, as upstream. See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).

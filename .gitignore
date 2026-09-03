@@ -1,0 +1,22 @@
+node_modules
+.next
+dist
+out
+build
+.open-next
+
+.env
+.env.*
+!.env.example
+!.env.local.example
+
+*.log
+*.raw-llm-stream.json
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.vercel
+coverage
+
+# Local operational notes holding directory credentials — never commit.
+LDAP Authentication Backend for Guacamole.txt

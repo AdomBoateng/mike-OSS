@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The application itself. The migration Job is deliberately NOT here — it has to
+# finish before these roll, so it lives in base/migrate and the deploy applies
+# it as a separate, earlier step.
+resources:
+  - configmap.yaml
+  - backend.yaml
+  - frontend.yaml
+  - ingress.yaml
+
+# includeSelectors is off deliberately: a label added to a Deployment's selector
+# is immutable, so turning it on later would make every existing Deployment
+# un-updatable and need deleting first.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: mike

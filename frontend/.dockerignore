@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+build
+.open-next
+.wrangler
+# Exclude local env so NEXT_PUBLIC_API_BASE_URL is NOT baked into the image —
+# the app derives the backend URL from the request host at runtime.
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Dockerfile
+.dockerignore

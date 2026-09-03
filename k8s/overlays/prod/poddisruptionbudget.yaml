@@ -1,0 +1,25 @@
+# Keep one backend serving during voluntary disruption (a node drain, a cluster
+# upgrade). Without this, draining a node can take both replicas at once and the
+# app is simply down — and every answer being streamed at that moment is lost,
+# which is a worse outcome here than in a request/response app.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mike-backend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mike
+      app.kubernetes.io/component: backend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mike-frontend
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mike
+      app.kubernetes.io/component: frontend

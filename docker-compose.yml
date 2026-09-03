@@ -1,0 +1,91 @@
+# Self-hosted Mike — full stack (Postgres + backend + frontend).
+#
+# Spin up:   docker compose up -d --build
+# Logs:      docker compose logs -f backend
+# Reset DB:  docker compose down -v   (drops the volume so init scripts re-run)
+#
+# Access from any machine on the network:  http://<server-ip>:3000
+#   - frontend is on :3000, backend API on :3001 (the browser derives the API
+#     host from the page URL, so no per-IP rebuild is needed).
+#
+# Requires backend/.env on the host (LDAP, S3/surf, session + other secrets).
+# Copy backend/.env.example -> backend/.env and fill it in. DATABASE_URL and
+# FRONTEND_URL are overridden below for the container network, so their values
+# in .env don't matter here.
+#
+# On first start (empty volume) Postgres runs backend/db/initdb/00-auth-shim.sql
+# then backend/schema.sql once, creating every table/function/trigger.
+#
+# LDAP (172.18.x) and surf/S3 (172.20.x) are external: the host — and therefore
+# the containers via NAT — must be able to route to them.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: mike-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mike
+      POSTGRES_PASSWORD: mike_local_dev
+      POSTGRES_DB: mike
+    ports:
+      # Exposed for host-side debugging (psql on :5433). Remove for a locked-down
+      # deployment — the backend reaches it internally on the compose network.
+      - "5433:5432"
+    volumes:
+      - mike_pgdata:/var/lib/postgresql/data
+      - ./backend/db/initdb/00-auth-shim.sql:/docker-entrypoint-initdb.d/00-auth-shim.sql:ro
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mike -d mike"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: mike-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override for the container network (service name, internal port).
+      DATABASE_URL: postgres://mike:mike_local_dev@postgres:5432/mike
+      # Reflect any request origin — LAN access by server IP. Lock to specific
+      # origins (comma-separated) for an internet-facing deployment.
+      FRONTEND_URL: "*"
+      PORT: "3001"
+      NODE_ENV: production
+      # Clear any host (e.g. Windows) soffice path from .env; the image ships
+      # LibreOffice and convert.ts auto-discovers /usr/bin/soffice.
+      SOFFICE_BINARY_PATH: ""
+    # The internal SMTP host isn't in the server's DNS (only resolution was
+    # missing; routing to it works), so map the hostname to its IP. Keep the
+    # HOSTNAME (don't put the IP in SMTP_HOST) so the TLS cert still validates
+    # on port 465. Override the IP with MAIL_HOST_IP if it ever changes; remove
+    # this block if the server's DNS is fixed to resolve the mail host.
+    extra_hosts:
+      - "mail.quantumgroupgh.com:${MAIL_HOST_IP:-10.18.200.20}"
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: mike-frontend
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      # Leave NEXT_PUBLIC_API_BASE_URL unset so the browser derives the backend
+      # URL from the page host (http://<server-ip>:3001). Set it only to pin a
+      # fixed backend URL.
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  mike_pgdata:

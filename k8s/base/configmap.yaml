@@ -1,0 +1,46 @@
+# Non-secret configuration. Everything here is readable by anyone who can read
+# the namespace — credentials belong in the Secret (see k8s/secret.example.yaml).
+#
+# The overlays patch what differs between UAT and production; what is here is
+# what they share.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mike-config
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+
+  # Served under a path prefix so one hostname carries both apps: the ingress
+  # sends /api to this Service and everything else to the frontend. The backend
+  # strips the prefix itself (src/lib/basePath.ts), so no controller-specific
+  # rewrite annotation is needed and swapping nginx for Traefik changes nothing.
+  API_BASE_PATH: "/api"
+
+  # The matching half of API_BASE_PATH: the browser calls https://<host>/api/...
+  # Same origin, so there is no CORS preflight and no second port to open.
+  API_BASE_URL: "/api"
+
+  # One proxy hop: the ingress controller. Rate limiting keys on the client IP,
+  # so this must match the real chain — too low and one visitor's limit applies
+  # to everybody, too high and anyone can spoof theirs with a header.
+  TRUST_PROXY_HOPS: "1"
+
+  # Both dependencies are outside the cluster and both are fatal at startup in
+  # production: a pod that cannot reach the directory means nobody can sign in,
+  # and one that cannot reach storage fails on a user's first upload rather than
+  # at boot. Leave these unset (i.e. fatal) unless an environment genuinely has
+  # no route yet — and then set it deliberately, with an end date, rather than
+  # letting a warning become permanent.
+  # STORAGE_STARTUP_PROBE: "fatal"
+  # LDAP_STARTUP_PROBE: "fatal"
+
+  # Long generations. Node's 300s default body timeout kills a healthy stream
+  # mid-answer while the model is still working; it surfaces to the user as
+  # "terminated" after a partial response.
+  CUSTOM_LLM_BODY_TIMEOUT_MS: "1800000"
+  CUSTOM_LLM_HEADERS_TIMEOUT_MS: "120000"
+
+  # Must match the context window of the model actually being served: vLLM's
+  # /models does not report max_model_len, so it cannot be detected.
+  CONTEXT_WINDOW_TOKENS: "32768"

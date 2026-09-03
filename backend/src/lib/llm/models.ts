@@ -1,0 +1,109 @@
+import type { Provider } from "./types";
+
+// ---------------------------------------------------------------------------
+// Canonical model IDs
+// ---------------------------------------------------------------------------
+// Main-chat tier (top-end) — user picks one of these per message.
+export const CLAUDE_MAIN_MODELS = [
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+] as const;
+export const GEMINI_MAIN_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+] as const;
+export const OPENAI_MAIN_MODELS = ["gpt-5.5", "gpt-5.4"] as const;
+
+// Mid-tier (used for tabular review) — user picks one in account settings.
+export const CLAUDE_MID_MODELS = ["claude-sonnet-4-6"] as const;
+export const GEMINI_MID_MODELS = ["gemini-3.5-flash", "gemini-3-flash-preview"] as const;
+export const OPENAI_MID_MODELS = ["gpt-5.4"] as const;
+
+// Low-tier (used for title generation, lightweight extractions) — user picks
+// one in account settings.
+export const CLAUDE_LOW_MODELS = ["claude-haiku-4-5"] as const;
+export const GEMINI_LOW_MODELS = ["gemini-3.1-flash-lite-preview"] as const;
+export const OPENAI_LOW_MODELS = ["gpt-5.4-lite"] as const;
+
+export const DEFAULT_MAIN_MODEL = "gemini-3-flash-preview";
+export const DEFAULT_TITLE_MODEL = "gemini-3.1-flash-lite-preview";
+export const DEFAULT_TABULAR_MODEL = "gemini-3-flash-preview";
+
+const ALL_MODELS = new Set<string>([
+    ...CLAUDE_MAIN_MODELS,
+    ...GEMINI_MAIN_MODELS,
+    ...OPENAI_MAIN_MODELS,
+    ...CLAUDE_MID_MODELS,
+    ...GEMINI_MID_MODELS,
+    ...OPENAI_MID_MODELS,
+    ...CLAUDE_LOW_MODELS,
+    ...GEMINI_LOW_MODELS,
+    ...OPENAI_LOW_MODELS,
+]);
+
+// ---------------------------------------------------------------------------
+// Custom (OpenAI-compatible) models
+// ---------------------------------------------------------------------------
+// Models served by a user-supplied OpenAI-compatible endpoint (Ollama, LM
+// Studio, vLLM, …) are not known ahead of time, so they cannot live in the
+// static lists above. They are namespaced with a `custom/` prefix so the
+// prefix-based provider routing keeps working; the prefix is stripped before
+// the model name is sent to the endpoint.
+
+export const CUSTOM_MODEL_PREFIX = "custom/";
+
+export function isCustomModel(model: string): boolean {
+    return model.startsWith(CUSTOM_MODEL_PREFIX);
+}
+
+/** Wrap a raw endpoint model name (e.g. `llama3.2`) into a Mike model id. */
+export function toCustomModelId(rawName: string): string {
+    return `${CUSTOM_MODEL_PREFIX}${rawName}`;
+}
+
+/** Strip the `custom/` prefix to get the name the endpoint expects. */
+export function customModelName(model: string): string {
+    return isCustomModel(model)
+        ? model.slice(CUSTOM_MODEL_PREFIX.length)
+        : model;
+}
+
+/**
+ * Human-readable names for the models our endpoint serves.
+ *
+ * The endpoint advertises machine ids (`qwen3_6_35b`); those ids are what gets
+ * sent back to it and must never be rewritten. This map only affects the label
+ * shown in the picker. Keys are matched case-insensitively; an id with no entry
+ * falls back to its raw name, so a newly deployed model still appears (just
+ * unprettified) instead of vanishing from the list.
+ */
+const CUSTOM_MODEL_LABELS: Record<string, string> = {
+    qwen3_6_35b: "Qwen3.6-35b",
+    qwen3_8_27b: "Qwen3.8-27b",
+    qwen3_8_flash_next: "Qwen3.8-Flash-Next",
+};
+
+/** Display label for a raw endpoint model name. */
+export function customModelLabel(rawName: string): string {
+    return CUSTOM_MODEL_LABELS[rawName.toLowerCase()] ?? rawName;
+}
+
+// ---------------------------------------------------------------------------
+// Provider inference
+// ---------------------------------------------------------------------------
+
+export function providerForModel(model: string): Provider {
+    if (isCustomModel(model)) return "custom";
+    if (model.startsWith("claude")) return "claude";
+    if (model.startsWith("gemini")) return "gemini";
+    if (model.startsWith("gpt-")) return "openai";
+    throw new Error(`Unknown model id: ${model}`);
+}
+
+export function resolveModel(id: string | null | undefined, fallback: string): string {
+    if (id && (ALL_MODELS.has(id) || isCustomModel(id))) return id;
+    return fallback;
+}

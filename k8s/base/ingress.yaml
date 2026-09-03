@@ -1,0 +1,55 @@
+# One hostname, two backends.
+#
+#   https://<host>/api/...  -> mike-backend  (the prefix is stripped by the app,
+#                              not by this ingress — see src/lib/basePath.ts)
+#   https://<host>/...      -> mike-frontend
+#
+# Splitting by path rather than by hostname means the browser only ever talks to
+# its own origin: no CORS preflight, one certificate, one DNS record, one
+# firewall rule. The alternative — a second hostname for the API — needs all of
+# those twice and gains nothing here.
+#
+# The host and TLS secret are set by the overlays.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mike
+  annotations:
+    # ---- These three are not optional. Read before changing. ----
+    #
+    # The assistant answers over Server-Sent Events, and a single answer can run
+    # for ten minutes or more (a full contract redraft measured 10m40s in
+    # testing). With nginx's defaults that request is killed at 60 seconds and
+    # the user sees a partial answer that stops mid-sentence — the same symptom
+    # as the undici body-timeout bug this project already fixed once, arriving
+    # from a completely different layer.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # Buffering defeats streaming outright: nginx would hold the whole answer
+    # and deliver it in one lump at the end, so the user stares at a spinner for
+    # ten minutes instead of watching the text arrive.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Uploads are capped at 100MB by the app (MAX_UPLOAD_SIZE_BYTES); allow a
+    # little over that for multipart overhead. nginx's 1MB default would reject
+    # any real document with a 413 before the app ever saw it.
+    nginx.ingress.kubernetes.io/proxy-body-size: "110m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: mike.example.com # replaced by the overlays
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: mike-backend
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mike-frontend
+                port:
+                  name: http
