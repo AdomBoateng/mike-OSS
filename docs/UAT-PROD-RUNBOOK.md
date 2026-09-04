@@ -145,8 +145,13 @@ password out of a job log. The intended route is straight from an env file, so
 there is one list of variables rather than two that drift:
 
 ```bash
-kubectl -n mike-uat create secret generic mike-secrets --from-env-file=./uat.env
+kubectl -n mike-uat create secret generic mike-secrets --from-env-file=backend/.env.uat
 ```
+
+Use `backend/.env.uat` and `backend/.env.prod` for these files specifically:
+`backend/.gitignore` ignores `.env*` there, so a file of live credentials
+cannot be committed by accident. A name like `uat.env` at the repo root matches
+no ignore pattern and can be.
 
 If the cluster has SealedSecrets or External Secrets, use it instead — an
 encrypted SealedSecret can live in the repo; a plain Secret cannot.
