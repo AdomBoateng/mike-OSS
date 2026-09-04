@@ -125,11 +125,19 @@ export function findConfigProblems(
       .map((o) => o.trim())
       .filter(Boolean);
 
-    if (origins.includes("*")) {
+    const invalidOrigins = origins.filter((origin) => {
+      try {
+        const parsed = new URL(origin);
+        return parsed.origin !== origin || !["http:", "https:"].includes(parsed.protocol);
+      } catch {
+        return true;
+      }
+    });
+    if (origins.length === 0 || origins.includes("*") || invalidOrigins.length > 0) {
       problems.push({
-        fatal: false,
+        fatal: true,
         message:
-          'FRONTEND_URL is "*", so any website can call this API with a stolen token. Set it to the exact origin(s) for an internet-facing deployment.',
+          "FRONTEND_URL must contain exact HTTP(S) origins in production; wildcard, missing, malformed, or path-bearing values are unsafe with cookie authentication.",
       });
     }
 

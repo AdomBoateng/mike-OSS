@@ -65,23 +65,28 @@ docker compose up -d --build
 
 ## Architecture
 
-### Auth (LDAP -> our JWT)
+### Auth (LDAP -> revocable HttpOnly session)
 
 `POST /auth/login` binds the credentials against LDAP (`lib/ldap.ts`), upserts `auth.users` keyed on
 `ldap_uid` (`lib/authUsers.ts`, preserving the user's existing UUID), refreshes display name +
-organisation from the directory, and signs a session JWT (`lib/session.ts`, `SESSION_JWT_SECRET`,
-12h). The frontend stores it in `localStorage` (`frontend/src/lib/authToken.ts`) and sends it as a
-Bearer header; `AuthContext` derives the user by decoding the token client-side.
+organisation from the directory, registers a 12-hour session in `public.user_sessions`, and signs a
+JWT containing that random session id (`lib/session.ts`, `SESSION_JWT_SECRET`). The browser receives
+it only in a host-only Secure/HttpOnly/SameSite cookie. `AuthContext` rehydrates from
+`GET /auth/session`; `frontend/src/lib/authToken.ts` only exchanges and deletes pre-migration tokens.
+Unsafe cookie-authenticated requests require the matching host-only CSRF cookie and
+`X-CSRF-Token` header. Logout revokes the shared database session, so it works across Kubernetes
+replicas.
 
 **LDAP is the source of truth** for email, display name, and organisation — those fields are
 read-only in the app (`updateEmail` deliberately throws). There is no signup; `/signup` redirects.
 
 `middleware/auth.ts` has two guards:
 
-- `requireAuth` — verifies the token, populates `res.locals.{userId,userEmail,ldapUid,mfaVerified}`.
+- `requireAuth` — verifies the token, checks the shared session registry and CSRF where applicable,
+  then populates `res.locals.{userId,userEmail,ldapUid,sessionId,mfaVerified}`.
 - `requireMfaIfEnrolled` — step-up gate. If the user has a verified TOTP factor and this session has
   not cleared a challenge, responds **403 with `code: "mfa_verification_required"`**; the frontend
-  prompts for a code, `POST /user/security/mfa/challenge` **re-mints the token** with
+  prompts for a code, `POST /user/security/mfa/challenge` rotates the HttpOnly session cookie with
   `mfaVerified: true`, and the request is retried. Add this guard to any new sensitive route.
 
 MFA state lives in `public.user_totp_factors` (`lib/mfa.ts`), secrets AES-256-GCM encrypted via
@@ -232,12 +237,12 @@ a clean shutdown to whatever supervises it.
    one for every container. Pinning this project's own subnet does not help; the fix is
    `default-address-pools` in the daemon config. See `docs/DEPLOYMENT.md`.
 
-Note `FRONTEND_URL` is a CORS *allowlist* (possibly `*` or comma-separated), so it is not a usable
+Note `FRONTEND_URL` is an exact CORS/origin allowlist (comma-separated), so it is not a usable
 link target. Anything that needs an absolute URL — emails especially — must use `APP_PUBLIC_URL`.
 **Both 3000 and 3001 must be reachable from client machines** since the browser calls the API
 directly. `DATABASE_URL`, `FRONTEND_URL`, and `SOFFICE_BINARY_PATH` from `backend/.env` are
-overridden by compose; everything else is used. `FRONTEND_URL` is a comma-separated CORS allowlist,
-or `*` to reflect any origin (safe here because auth is Bearer, not cookie). LDAP and S3/surf are
+overridden by compose; everything else is used. Production refuses wildcard or malformed origins
+because authentication uses ambient cookies. LDAP and S3/surf are
 external hosts the server must be able to route to. The backend image ships headless LibreOffice for
 DOC/DOCX to PDF; locally you need LibreOffice on PATH (or `SOFFICE_BINARY_PATH`).
 

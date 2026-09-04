@@ -2,7 +2,7 @@
 
 import { getApiBase } from "@/lib/apiBase";
 import { useEffect, useState } from "react";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 
 export interface DocumentVersionRow {
     id: string;
@@ -53,15 +53,13 @@ export function useDocumentVersions(
 
         (async () => {
             try {
-                const token = getStoredToken();
                 const apiBase =
                     getApiBase();
                 const resp = await fetch(
                     `${apiBase}/single-documents/${documentId}/versions`,
                     {
-                        headers: token
-                            ? { Authorization: `Bearer ${token}` }
-                            : {},
+                        credentials: "include",
+                        headers: getAuthRequestHeaders(),
                     },
                 );
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

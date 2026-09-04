@@ -3,7 +3,7 @@
 import { getApiBase } from "@/lib/apiBase";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 import { applyOptimisticResolution } from "../assistant/EditCard";
 import { DocView } from "./DocView";
 import { DocxView } from "./DocxView";
@@ -410,16 +410,14 @@ function EditResolveButtons({
                 );
             }
             try {
-                const token = getStoredToken();
                 const apiBase =
                     getApiBase();
                 const resp = await fetch(
                     `${apiBase}/single-documents/${edit.document_id}/edits/${edit.edit_id}/${verb}`,
                     {
                         method: "POST",
-                        headers: token
-                            ? { Authorization: `Bearer ${token}` }
-                            : undefined,
+                        credentials: "include",
+                        headers: getAuthRequestHeaders(),
                     },
                 );
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -508,7 +506,6 @@ function DownloadButton({
         if (busy || isReloading) return;
         setBusy(true);
         try {
-            const token = getStoredToken();
             const apiBase =
                 getApiBase();
             const qs = versionId
@@ -517,7 +514,8 @@ function DownloadButton({
             const resp = await fetch(
                 `${apiBase}/single-documents/${documentId}/docx${qs}`,
                 {
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    credentials: "include",
+                    headers: getAuthRequestHeaders(),
                 },
             );
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

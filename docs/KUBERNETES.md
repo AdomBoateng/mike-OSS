@@ -209,6 +209,31 @@ kubectl -n mike-uat rollout status deployment/mike-backend --timeout=900s
 
 The Job is deleted first because a completed Job's pod template is immutable.
 
+### First cookie-auth rollout
+
+The `20260904_user_sessions.sql` migration must complete before a backend pod
+using cookie auth starts. Sessions are registered in PostgreSQL, so logout and
+revocation work across both replicas and ingress session affinity is neither
+needed nor desirable.
+
+For a zero-downtime first upgrade from the older localStorage/Bearer frontend,
+use two compatibility stages:
+
+1. Temporarily set `ALLOW_BEARER_TOKEN_RESPONSE=true` for the backend and roll
+   the migrated backend first. This keeps any old frontend pod functional.
+2. Roll the frontend. On first load it exchanges an existing localStorage token
+   at `/api/auth/session`, receives the HttpOnly cookie, and deletes the old
+   token. New logins use cookies immediately.
+3. Set `ALLOW_BEARER_TOKEN_RESPONSE=false` again and restart the backend pods.
+   Authorization Bearer headers remain accepted for the migration window, but
+   login and MFA responses no longer expose a token to browser JavaScript.
+
+Production also requires an exact `FRONTEND_URL`, HTTPS at the ingress, and
+preservation of the public Host and `X-Forwarded-Proto` headers. The checked-in
+production and UAT overlays already use the same HTTPS origin for `/` and
+`/api`, which is the preferred cookie layout. Never copy the local Compose
+stack's `COOKIE_SECURE=false` override into Kubernetes.
+
 **Rollback** is a re-deploy of the previous image tag; images are tagged with the
 commit SHA precisely so there is something to name:
 

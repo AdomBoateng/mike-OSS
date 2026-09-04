@@ -47,6 +47,22 @@ create table if not exists public.user_profiles (
 create index if not exists idx_user_profiles_user
   on public.user_profiles(user_id);
 
+-- Shared session registry. Every API replica checks this before accepting a
+-- JWT so logout and administrative revocation take effect cluster-wide.
+create table if not exists public.user_sessions (
+  id uuid primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked_at timestamptz
+);
+
+create index if not exists idx_user_sessions_active
+  on public.user_sessions(user_id, expires_at)
+  where revoked_at is null;
+
+alter table public.user_sessions enable row level security;
+
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql

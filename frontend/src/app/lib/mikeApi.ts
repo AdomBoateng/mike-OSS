@@ -3,7 +3,10 @@
  * Attaches our session token (from LDAP login) for user authentication.
  */
 
-import { getStoredToken, setStoredToken } from "@/lib/authToken";
+import {
+    clearStoredToken,
+    getAuthRequestHeaders,
+} from "@/lib/authToken";
 import { getApiBase } from "@/lib/apiBase";
 import type {
     AssistantEvent,
@@ -65,13 +68,20 @@ export function isMfaRequiredError(error: unknown) {
 }
 
 async function getAuthHeader(): Promise<Record<string, string>> {
-    const token = getStoredToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    return getAuthRequestHeaders();
+}
+
+export interface SessionUser {
+    id: string;
+    email: string | null;
+    displayName?: string | null;
+    mfaVerified: boolean;
+    mfaLoginRequired: boolean;
 }
 
 export interface LoginResult {
-    token: string;
-    user: { id: string; email: string | null; displayName: string | null };
+    token?: string;
+    user: SessionUser;
 }
 
 /** Authenticate against the backend (LDAP). Throws MikeApiError on failure. */
@@ -82,6 +92,7 @@ export async function login(
     const response = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         cache: "no-store",
+        credentials: "include",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ username, password }),
     });
@@ -91,11 +102,35 @@ export async function login(
     return (await response.json()) as LoginResult;
 }
 
+export async function getSession(): Promise<{ user: SessionUser }> {
+    const response = await fetch(`${API_BASE}/auth/session`, {
+        cache: "no-store",
+        credentials: "include",
+        headers: { Accept: "application/json", ...getAuthRequestHeaders() },
+    });
+    if (!response.ok) throw await toApiError(response, "/auth/session");
+    const result = (await response.json()) as { user: SessionUser };
+    clearStoredToken();
+    return result;
+}
+
+export async function logout(): Promise<void> {
+    const response = await fetch(`${API_BASE}/auth/logout`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "include",
+        headers: { Accept: "application/json", ...getAuthRequestHeaders() },
+    });
+    if (!response.ok) throw await toApiError(response, "/auth/logout");
+    clearStoredToken();
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const authHeaders = await getAuthHeader();
     const { headers: initHeaders, ...restInit } = init ?? {};
     const response = await fetch(`${API_BASE}${path}`, {
         cache: "no-store",
+        credentials: "include",
         ...restInit,
         headers: {
             Accept: "application/json",
@@ -125,6 +160,7 @@ async function apiBlobRequest(path: string): Promise<{
     const authHeaders = await getAuthHeader();
     const response = await fetch(`${API_BASE}${path}`, {
         cache: "no-store",
+        credentials: "include",
         headers: {
             Accept: "application/json",
             ...authHeaders,
@@ -209,8 +245,8 @@ export async function enrollMfa(): Promise<MfaEnrollment> {
  * Confirm enrollment with a code. On success the backend re-issues a verified
  * session token; we persist it and return it so the caller can update auth state.
  */
-export async function verifyMfaEnrollment(code: string): Promise<string> {
-    const { token } = await apiRequest<{ token: string }>(
+export async function verifyMfaEnrollment(code: string): Promise<SessionUser> {
+    const { user } = await apiRequest<{ user: SessionUser }>(
         "/user/security/mfa/verify",
         {
             method: "POST",
@@ -218,13 +254,13 @@ export async function verifyMfaEnrollment(code: string): Promise<string> {
             body: JSON.stringify({ code }),
         },
     );
-    setStoredToken(token);
-    return token;
+    clearStoredToken();
+    return user;
 }
 
 /** Step-up verification for an enrolled user (login gate / sensitive actions). */
-export async function challengeMfa(code: string): Promise<string> {
-    const { token } = await apiRequest<{ token: string }>(
+export async function challengeMfa(code: string): Promise<SessionUser> {
+    const { user } = await apiRequest<{ user: SessionUser }>(
         "/user/security/mfa/challenge",
         {
             method: "POST",
@@ -232,8 +268,8 @@ export async function challengeMfa(code: string): Promise<string> {
             body: JSON.stringify({ code }),
         },
     );
-    setStoredToken(token);
-    return token;
+    clearStoredToken();
+    return user;
 }
 
 /** Remove the authenticator app. Throws MikeApiError(mfa_verification_required)
@@ -708,6 +744,7 @@ export async function uploadDocumentVersion(
         `${API_BASE}/single-documents/${documentId}/versions`,
         {
             method: "POST",
+            credentials: "include",
             headers: { ...authHeaders },
             body: form,
         },
@@ -730,6 +767,7 @@ export async function replaceDocumentVersionFile(
         `${API_BASE}/single-documents/${documentId}/versions/${versionId}/file`,
         {
             method: "PUT",
+            credentials: "include",
             headers: { ...authHeaders },
             body: form,
         },
@@ -794,6 +832,7 @@ export async function uploadProjectDocument(
         `${API_BASE}/projects/${projectId}/documents`,
         {
             method: "POST",
+            credentials: "include",
             headers: { ...authHeaders },
             body: form,
         },
@@ -810,6 +849,7 @@ export async function uploadStandaloneDocument(
     form.append("file", file);
     const response = await fetch(`${API_BASE}/single-documents`, {
         method: "POST",
+        credentials: "include",
         headers: { ...authHeaders },
         body: form,
     });
@@ -849,6 +889,7 @@ export async function downloadDocumentsZip(
     const response = await fetch(`${API_BASE}/single-documents/download-zip`, {
         method: "POST",
         cache: "no-store",
+        credentials: "include",
         headers: {
             "Content-Type": "application/json",
             ...authHeaders,
@@ -980,6 +1021,7 @@ export async function streamChat(payload: {
     const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/chat`, {
         method: "POST",
+        credentials: "include",
         headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
@@ -1010,6 +1052,7 @@ export async function streamProjectChat(payload: {
     const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/projects/${projectId}/chat`, {
         method: "POST",
+        credentials: "include",
         headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
@@ -1124,6 +1167,7 @@ export async function streamTabularGeneration(
     const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/tabular-review/${reviewId}/generate`, {
         method: "POST",
+        credentials: "include",
         headers: { ...authHeaders },
     });
 }
@@ -1138,6 +1182,7 @@ export async function streamTabularChat(
     const authHeaders = await getAuthHeader();
     return fetch(`${API_BASE}/tabular-review/${reviewId}/chat`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({
             messages,

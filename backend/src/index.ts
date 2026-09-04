@@ -190,15 +190,14 @@ app.use((_req, res, next) => {
   next();
 });
 
-// CORS. FRONTEND_URL is a comma-separated allowlist of origins. Set it to "*"
-// to reflect any request origin — useful for LAN access where the app is reached
-// by the server's IP (auth is Bearer-token, not cookie, so reflecting is safe
-// here). Lock it to specific origins for internet-facing deployments.
+// CORS. FRONTEND_URL is a comma-separated allowlist of origins. Cookie auth
+// requires exact production origins; wildcard reflection remains available only
+// in development for temporary LAN testing.
 const corsOrigins = (process.env.FRONTEND_URL ?? "http://localhost:3000")
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);
-const reflectAnyOrigin = corsOrigins.includes("*");
+const reflectAnyOrigin = !isProduction && corsOrigins.includes("*");
 
 app.use(
   cors({
@@ -209,11 +208,19 @@ app.use(
           if (!origin || corsOrigins.includes(origin)) callback(null, true);
           else callback(null, false);
         },
-    // Authentication is an explicit Bearer header; cross-origin requests do
-    // not need ambient cookies or HTTP authentication credentials.
-    credentials: false,
+    credentials: true,
   }),
 );
+
+// CORS response headers alone do not prevent a browser from sending a forged
+// mutation. Reject disallowed browser origins before login or any API route can
+// change state. Non-browser clients without Origin remain supported.
+app.use((req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  const origin = req.get("origin");
+  if (!origin || reflectAnyOrigin || corsOrigins.includes(origin)) return next();
+  res.status(403).json({ detail: "Request origin is not allowed" });
+});
 
 app.use(generalLimiter);
 
@@ -383,9 +390,8 @@ async function start(): Promise<void> {
   });
 }
 
-// The process-level handlers above deliberately keep the server alive through
-// runtime faults, but a failed startup check is not a runtime fault — there is
-// nothing to keep alive. Exit non-zero so the supervisor sees a real failure.
+// A failed startup check leaves nothing useful to keep alive. Exit non-zero so
+// the supervisor sees a real failure and can apply its restart policy.
 start().catch((err) => {
   console.error(
     `[server] startup aborted: ${err instanceof Error ? err.message : String(err)}`,

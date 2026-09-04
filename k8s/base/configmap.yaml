@@ -26,6 +26,13 @@ data:
   # to everybody, too high and anyone can spoof theirs with a header.
   TRUST_PROXY_HOPS: "1"
 
+  # Browser sessions are host-only Secure/HttpOnly cookies. The ingress must
+  # terminate HTTPS and preserve the public Host/X-Forwarded-Proto headers.
+  # Keep legacy JWT response bodies disabled; Bearer headers remain accepted
+  # temporarily so older sessions can exchange themselves at /api/auth/session.
+  ALLOW_BEARER_TOKEN_RESPONSE: "false"
+  COOKIE_SECURE: "true"
+
   # Both dependencies are outside the cluster and both are fatal at startup in
   # production: a pod that cannot reach the directory means nobody can sign in,
   # and one that cannot reach storage fails on a user's first upload rather than

@@ -2,7 +2,7 @@
 
 import { getApiBase } from "@/lib/apiBase";
 import { useEffect, useRef, useState } from "react";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 
 /**
  * /display returns either PDF bytes (when the active version has a PDF
@@ -38,7 +38,6 @@ export function useFetchSingleDoc(
 
         (async () => {
             try {
-                const token = getStoredToken();
                 if (cancelled) return;
 
                 const apiBase =
@@ -49,9 +48,8 @@ export function useFetchSingleDoc(
                 const response = await fetch(
                     `${apiBase}/single-documents/${documentId}/display${qs}`,
                     {
-                        headers: token
-                            ? { Authorization: `Bearer ${token}` }
-                            : {},
+                        credentials: "include",
+                        headers: getAuthRequestHeaders(),
                     },
                 );
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);

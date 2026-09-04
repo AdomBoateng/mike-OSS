@@ -132,7 +132,7 @@ function MfaSettingsSkeleton() {
 }
 
 export default function SecurityPage() {
-    const { applySessionToken } = useAuth();
+    const { applySessionUser } = useAuth();
     const { profile, updateMfaOnLogin } = useUserProfile();
     const [loading, setLoading] = useState(true);
     const [hasVerifiedFactor, setHasVerifiedFactor] = useState(false);
@@ -212,8 +212,8 @@ export default function SecurityPage() {
         setBusy(true);
         setStatus(null);
         try {
-            const token = await verifyMfaEnrollment(verificationCode.trim());
-            applySessionToken(token);
+            const sessionUser = await verifyMfaEnrollment(verificationCode.trim());
+            applySessionUser(sessionUser);
             setEnrollment(null);
             setSetupModalOpen(false);
             setVerificationCode("");

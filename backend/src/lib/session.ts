@@ -17,6 +17,8 @@ export interface SessionClaims {
   mfaVerified?: boolean;
   /** Whether ordinary API access must wait for login-time TOTP. */
   mfaLoginRequired?: boolean;
+  /** Random server-side session id used for cluster-wide revocation. */
+  sessionId?: string;
 }
 
 const DEFAULT_TTL: SignOptions["expiresIn"] = "12h";
@@ -48,6 +50,7 @@ export function verifySession(token: string): SessionClaims | null {
         ldapUid?: string;
         mfaVerified?: boolean;
         mfaLoginRequired?: boolean;
+        sessionId?: string;
       };
       return {
         sub: d.sub,
@@ -58,6 +61,7 @@ export function verifySession(token: string): SessionClaims | null {
           typeof d.mfaLoginRequired === "boolean"
             ? d.mfaLoginRequired
             : undefined,
+        sessionId: typeof d.sessionId === "string" ? d.sessionId : undefined,
       };
     }
     return null;

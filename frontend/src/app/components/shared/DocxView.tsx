@@ -4,7 +4,7 @@ import { getApiBase } from "@/lib/apiBase";
 import { useEffect, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { useFetchDocxBytes } from "@/app/hooks/useFetchDocxBytes";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 import {
     clearDocxQuoteHighlights,
     highlightDocxQuote,
@@ -147,7 +147,6 @@ async function tagWIdsOnRenderedDom(
     versionId: string | null | undefined,
 ): Promise<void> {
     try {
-        const token = getStoredToken();
         const apiBase =
             getApiBase();
         const qs = versionId
@@ -155,7 +154,7 @@ async function tagWIdsOnRenderedDom(
             : "";
         const resp = await fetch(
             `${apiBase}/single-documents/${documentId}/tracked-change-ids${qs}`,
-            { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+            { credentials: "include", headers: getAuthRequestHeaders() },
         );
         if (!resp.ok) {
             console.warn(

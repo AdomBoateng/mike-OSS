@@ -27,7 +27,7 @@ import type {
 } from "../shared/types";
 import { EditCard, applyOptimisticResolution } from "./EditCard";
 import { PreResponseWrapper } from "../shared/PreResponseWrapper";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 
 const RESPONSE_GLASS_SURFACE =
     "rounded-xl border border-white/70 bg-white/55 shadow-[0_3px_9px_rgba(15,23,42,0.03),inset_0_1px_0_rgba(255,255,255,0.9),inset_0_-4px_9px_rgba(255,255,255,0.05)] backdrop-blur-2xl";
@@ -116,7 +116,7 @@ function BulkEditActions({
         setBusy(verb);
         setProgress({ done: 0, total: pending.length });
         try {
-            const token = getStoredToken();
+            const authHeaders = getAuthRequestHeaders();
             const apiBase =
                 getApiBase();
 
@@ -145,9 +145,8 @@ function BulkEditActions({
                         `${apiBase}/single-documents/${annotation.document_id}/edits/${annotation.edit_id}/${verb}`,
                         {
                             method: "POST",
-                            headers: token
-                                ? { Authorization: `Bearer ${token}` }
-                                : undefined,
+                            credentials: "include",
+                            headers: authHeaders,
                         },
                     );
                     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -742,9 +741,9 @@ function DocDownloadBlock({
         if (busy || isReloading || !href) return;
         setBusy(true);
         try {
-            const token = getStoredToken();
             const resp = await fetch(href, {
-                headers: token ? { Authorization: `Bearer ${token}` } : {},
+                credentials: "include",
+                headers: getAuthRequestHeaders(),
             });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const blob = await resp.blob();

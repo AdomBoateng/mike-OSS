@@ -23,6 +23,7 @@ describe("session tokens", () => {
       ...claims,
       mfaVerified: false,
       mfaLoginRequired: undefined,
+      sessionId: undefined,
     });
   });
 
@@ -40,6 +41,11 @@ describe("session tokens", () => {
     const decoded = verifySession(token);
     assert.equal(decoded?.mfaVerified, false);
     assert.equal(decoded?.mfaLoginRequired, true);
+  });
+
+  test("preserves the server-side session id", () => {
+    const token = signSession({ ...claims, sessionId: "session-123" });
+    assert.equal(verifySession(token)?.sessionId, "session-123");
   });
 
   test("verify rejects a garbage token", () => {

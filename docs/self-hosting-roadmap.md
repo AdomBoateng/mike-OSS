@@ -61,9 +61,10 @@ the migrations revoke client grants outright.
 
 `POST /auth/login` binds against LDAP, upserts `auth.users` keyed on `ldap_uid`
 **preserving any existing UUID**, refreshes display name and organisation from the
-directory, and signs a 12-hour HS256 session JWT. The frontend stores it in `localStorage`
-and sends it as a Bearer header — the same header contract as before, so route handlers
-barely changed.
+directory, registers a revocable 12-hour session in PostgreSQL, and signs an HS256 JWT
+carrying that session id. The browser receives it in a Secure/HttpOnly/SameSite cookie;
+unsafe requests use double-submit CSRF protection. A one-time bridge exchanges and deletes
+sessions created by the previous localStorage/Bearer release.
 
 LDAP is the source of truth for email, display name, and organisation; all three are
 read-only in the app. There is no signup path; `/signup` redirects to login.
@@ -74,7 +75,7 @@ Rebuilt against `public.user_totp_factors`, secrets AES-256-GCM encrypted via
 `lib/secretCrypto.ts`. Both contracts from the Supabase era are preserved: the
 `mfa_on_login` preference, and step-up as a 403 carrying `code: "mfa_verification_required"`
 — so `MfaLoginGate` and the verify-mfa flow work as they did. A successful challenge
-re-mints the session token with `mfaVerified: true`. `requireMfaIfEnrolled` guards
+rotates the session cookie with `mfaVerified: true`. `requireMfaIfEnrolled` guards
 sensitive routes.
 
 The open question from the original plan — whether Supabase TOTP secrets could be exported
@@ -119,8 +120,9 @@ Kept from the original plan because the code still depends on them.
   weakening the login gate.
 - **Auth and DB had to move together.** `user_profiles.user_id` referenced Supabase auth
   users and MFA rode on Supabase AAL, so splitting the two migrations wasn't possible.
-- **Sessions are our own JWT, not a Supabase token**, deliberately keeping the `Bearer`
-  header contract so route handlers didn't need rewriting.
+- **Sessions are our own JWT, not a Supabase token**, held in an HttpOnly cookie and backed by
+  `public.user_sessions` for cluster-wide logout and revocation. Bearer input remains a temporary
+  migration compatibility path, not the browser's steady-state storage.
 
 ## Original sequencing
 

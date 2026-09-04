@@ -53,7 +53,12 @@ services:
       DATABASE_URL: postgres://mike:mike_local_dev@postgres:5432/mike
       # Reflect any request origin — LAN access by server IP. Lock to specific
       # origins (comma-separated) for an internet-facing deployment.
-      FRONTEND_URL: "*"
+      # Cookie auth requires an exact browser origin. Override this with the
+      # precise LAN origin (for example http://192.168.1.20:3000) when needed.
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      # This compose stack is intentionally plain HTTP for local/LAN use only.
+      # Kubernetes and docker-compose.prod.yml retain Secure cookies.
+      COOKIE_SECURE: "false"
       PORT: "3001"
       NODE_ENV: production
       # Clear any host (e.g. Windows) soffice path from .env; the image ships

@@ -130,20 +130,20 @@ describe("findConfigProblems", () => {
     assert.equal(smtp.fatal, false);
   });
 
-  test('a wildcard FRONTEND_URL warns in production', () => {
+  test('a wildcard FRONTEND_URL is fatal in production', () => {
     const env = goodEnv();
     env.FRONTEND_URL = "*";
     const problems = withEnv(env);
     const cors = problems.find((p) => p.message.includes("FRONTEND_URL"));
     assert.ok(cors);
-    assert.equal(cors.fatal, false);
+    assert.equal(cors.fatal, true);
   });
 
   test("wildcard CORS is not flagged outside production", () => {
     const env = goodEnv();
     env.NODE_ENV = "development";
     env.FRONTEND_URL = "*";
-    assert.ok(!messages(withEnv(env)).includes('FRONTEND_URL is "*"'));
+    assert.ok(!messages(withEnv(env)).includes("FRONTEND_URL must contain exact"));
   });
 
   test("email-capable production without a public URL warns", () => {

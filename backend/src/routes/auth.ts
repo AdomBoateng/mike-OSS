@@ -1,14 +1,20 @@
 import { Router } from "express";
 import { ldapAuthenticate, ldapEnabled } from "../lib/ldap";
 import { upsertLdapUser, syncLdapProfile } from "../lib/authUsers";
-import { signSession } from "../lib/session";
 import { userHasVerifiedTotp } from "../lib/mfa";
 import { createServerSupabase } from "../lib/supabase";
 import { safeErrorLog } from "../lib/safeError";
+import { requireSession } from "../middleware/auth";
+import {
+  clearAuthCookies,
+  exposeLegacyBearerTokens,
+  setAuthCookies,
+} from "../lib/authCookies";
+import { issueSession, revokeSession } from "../lib/userSessions";
 
 export const authRouter = Router();
 
-// POST /auth/login  { username, password } -> { token, user }
+// POST /auth/login  { username, password } -> { user }
 // Authenticates against the LDAP directory, upserts the app user (seeding a
 // profile on first login), and issues our own session token.
 authRouter.post("/login", async (req, res) => {
@@ -87,20 +93,72 @@ authRouter.post("/login", async (req, res) => {
     res.status(503).json({ detail: "Authentication service unavailable" });
     return;
   }
-  const token = signSession({
-    sub: user.id,
-    email: user.email ?? "",
-    ldapUid: ldapUser.ldapUid,
-    mfaVerified: !hasFactor,
-    mfaLoginRequired: hasFactor && mfaOnLogin,
-  });
+  let token: string;
+  try {
+    ({ token } = await issueSession({
+      sub: user.id,
+      email: user.email ?? "",
+      ldapUid: ldapUser.ldapUid,
+      mfaVerified: !hasFactor,
+      mfaLoginRequired: hasFactor && mfaOnLogin,
+    }));
+  } catch (err) {
+    console.error("[auth/login] failed to create session", safeErrorLog(err));
+    res.status(503).json({ detail: "Authentication service unavailable" });
+    return;
+  }
+  setAuthCookies(res, token);
 
   res.json({
-    token,
+    ...(exposeLegacyBearerTokens() ? { token } : {}),
     user: {
       id: user.id,
       email: user.email,
       displayName: ldapUser.displayName,
+      mfaVerified: !hasFactor,
+      mfaLoginRequired: hasFactor && mfaOnLogin,
     },
   });
+});
+
+// Rehydrate browser auth from the HttpOnly cookie. During rollout this also
+// exchanges an existing Bearer token for cookies, after which the frontend
+// removes the legacy token from localStorage.
+authRouter.get("/session", requireSession, async (_req, res) => {
+  const user = {
+    id: res.locals.userId as string,
+    email: (res.locals.userEmail as string) ?? "",
+    mfaVerified: res.locals.mfaVerified === true,
+    mfaLoginRequired: res.locals.mfaLoginRequired === true,
+  };
+  try {
+    let token = res.locals.token as string;
+    if (typeof res.locals.sessionId !== "string") {
+      ({ token } = await issueSession({
+        sub: user.id,
+        email: user.email,
+        ldapUid: (res.locals.ldapUid as string) ?? "",
+        mfaVerified: user.mfaVerified,
+        mfaLoginRequired: user.mfaLoginRequired,
+      }));
+    }
+    setAuthCookies(res, token);
+    res.json({ user });
+  } catch (err) {
+    console.error("[auth/session] migration failed", safeErrorLog(err));
+    res.status(503).json({ detail: "Authentication service unavailable" });
+  }
+});
+
+authRouter.post("/logout", requireSession, async (_req, res) => {
+  try {
+    if (typeof res.locals.sessionId === "string") {
+      await revokeSession(res.locals.sessionId, res.locals.userId as string);
+    }
+    clearAuthCookies(res);
+    res.status(204).end();
+  } catch (err) {
+    console.error("[auth/logout] session revocation failed", safeErrorLog(err));
+    res.status(503).json({ detail: "Authentication service unavailable" });
+  }
 });

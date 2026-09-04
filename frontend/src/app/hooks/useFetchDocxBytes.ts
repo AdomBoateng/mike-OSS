@@ -2,7 +2,7 @@
 
 import { getApiBase } from "@/lib/apiBase";
 import { useEffect, useState } from "react";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 
 export interface FetchDocxResult {
     bytes: ArrayBuffer | null;
@@ -80,11 +80,11 @@ export function useFetchDocxBytes(
         const pending =
             inFlight.get(key) ??
             (async () => {
-                const token = getStoredToken();
                 // Stream bytes through the backend (avoids CORS on R2
                 // signed URLs).
                 const bin = await fetch(url, {
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    credentials: "include",
+                    headers: getAuthRequestHeaders(),
                 });
                 if (!bin.ok) throw new Error(`HTTP ${bin.status}`);
                 const buf = await bin.arrayBuffer();

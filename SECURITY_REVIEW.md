@@ -10,13 +10,14 @@
 
 The review found and fixed several material issues. The most serious were a server-side MFA enforcement gap, server-side request forgery paths in user-controlled LLM/MCP endpoints, known-vulnerable Next.js and Multer versions, permissive proxy trust that could undermine IP rate limits, and insufficient validation of uploaded file contents and AI tool execution metadata.
 
-All implemented changes compile, the complete backend test suite passes, and the frontend production build succeeds. No obvious committed credentials were found by the targeted secret-pattern review. The application still has architectural security work worth scheduling, especially replacing browser `localStorage` bearer tokens with hardened cookies and adding centralized session revocation.
+All implemented changes compile, the complete backend test suite passes, and the frontend production build succeeds. No obvious committed credentials were found by the targeted secret-pattern review. Browser authentication now uses hardened cookies, CSRF protection, and a shared PostgreSQL session registry instead of persistent browser bearer-token storage.
 
 ## Findings fixed
 
 | ID | Severity | Finding | Resolution |
 |---|---:|---|---|
 | AUTH-01 | High | Login-time MFA was primarily enforced by frontend navigation, allowing an unverified bearer token to reach protected API routes. | Added a signed `mfaLoginRequired` session claim, server-side enforcement, fail-closed legacy-token handling, database-backed login policy checks, and protected MFA completion routes. |
+| AUTH-02 | High | A 12-hour bearer JWT persisted in browser `localStorage`, so XSS could extract and reuse it off-device; logout could not revoke copied tokens across replicas. | Moved browser auth to host-only Secure/HttpOnly/SameSite cookies, added double-submit CSRF and origin checks, introduced a shared PostgreSQL session registry, and made logout revoke the session cluster-wide. |
 | NET-01 | High | User-controlled custom LLM and MCP URLs could reach private, loopback, link-local, or cloud-metadata services; ordinary URL validation alone would not stop DNS rebinding. | Added public-HTTPS URL policy, DNS preflight checks, connect-time address validation, manual redirect validation, response-size limits, and credential/fragment rejection. Admin-controlled internal model endpoints remain explicitly trusted. |
 | DEP-01 | High | Next.js 16.2.10 was in ranges affected by published server-side request forgery and unbounded Server Action request issues. | Upgraded and locked Next.js to 16.3.4. |
 | DEP-02 | High | Multer 2.2.0 was affected by published denial-of-service issues involving malformed multipart input and unbounded bracket notation. | Upgraded to 2.3.0 and added strict multipart field, part, field-size, and array-index limits. |
@@ -43,7 +44,7 @@ All implemented changes compile, the complete backend test suite passes, and the
 
 | Check | Result |
 |---|---|
-| Backend full test suite | **321 passed, 0 failed** |
+| Backend full test suite | **326 passed, 0 failed** |
 | Backend TypeScript build | **Passed** |
 | Frontend Next.js production build | **Passed** on Next.js 16.3.4 |
 | Patch whitespace check | **Passed** (`git diff --check`) |
@@ -56,11 +57,9 @@ The npm advisory endpoint timed out repeatedly during this environment's review,
 
 ### Priority 1
 
-1. **Migrate bearer tokens out of `localStorage`.** Use `HttpOnly`, `Secure`, narrowly scoped `SameSite` cookies, then add explicit CSRF protection for state-changing requests. Until then, any successful XSS can steal a 12-hour token.
-2. **Add centralized session revocation.** Track session IDs or token versions so logout, account disablement, password changes, and suspected compromise can invalidate active sessions immediately.
-3. **Use a shared rate-limit store.** The in-memory limiter is per process. Use Redis or an ingress-native distributed limiter before scaling to multiple replicas, and combine IP throttling with normalized account/device signals on login.
-4. **Isolate document parsing.** Move LibreOffice and complex document parsing into a sandboxed worker with concurrency quotas, CPU/time limits, malware scanning, and content disarm/reconstruction where appropriate. Avoid retaining 100 MB uploads entirely in API-process memory.
-5. **Normalize asynchronous Express error handling.** Express 4 does not automatically route rejected async handlers to error middleware. Wrap all async routes or migrate to a framework/runtime version with consistent promise-error handling, then terminate on truly unhandled rejections.
+1. **Use a shared rate-limit store.** The in-memory limiter is per process. Use Redis or an ingress-native distributed limiter before scaling beyond the current replicas, and combine IP throttling with normalized account/device signals on login.
+2. **Isolate document parsing.** Move LibreOffice and complex document parsing into a sandboxed worker with concurrency quotas, CPU/time limits, malware scanning, and content disarm/reconstruction where appropriate. Avoid retaining 100 MB uploads entirely in API-process memory.
+3. **Normalize asynchronous Express error handling.** Express 4 does not automatically route rejected async handlers to error middleware. Wrap all async routes or migrate to a framework/runtime version with consistent promise-error handling, then terminate on truly unhandled rejections.
 
 ### Priority 2
 

@@ -27,7 +27,7 @@ export function MfaVerificationPopup({
     title = "Two-factor verification required",
     message = "Enter a code from your authenticator app to continue.",
 }: MfaVerificationPopupProps) {
-    const { applySessionToken } = useAuth();
+    const { applySessionUser } = useAuth();
     const [code, setCode] = useState("");
     const [verifying, setVerifying] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -46,8 +46,8 @@ export function MfaVerificationPopup({
         setVerifying(true);
         setError(null);
         try {
-            const token = await challengeMfa(code.trim());
-            applySessionToken(token);
+            const sessionUser = await challengeMfa(code.trim());
+            applySessionUser(sessionUser);
             setCode("");
             onVerified();
         } catch (err) {

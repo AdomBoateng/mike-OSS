@@ -2,7 +2,7 @@
 
 import { getApiBase } from "@/lib/apiBase";
 import { useState } from "react";
-import { getStoredToken } from "@/lib/authToken";
+import { getAuthRequestHeaders } from "@/lib/authToken";
 import type { EditAnnotation } from "../shared/types";
 
 function normalizeText(s: string) {
@@ -221,16 +221,14 @@ export function EditCard({
             console.error("[EditCard] optimistic update threw", e);
         }
         try {
-            const token = getStoredToken();
             const apiBase =
                 getApiBase();
             const resp = await fetch(
                 `${apiBase}/single-documents/${annotation.document_id}/edits/${annotation.edit_id}/${verb}`,
                 {
                     method: "POST",
-                    headers: token
-                        ? { Authorization: `Bearer ${token}` }
-                        : undefined,
+                    credentials: "include",
+                    headers: getAuthRequestHeaders(),
                 },
             );
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

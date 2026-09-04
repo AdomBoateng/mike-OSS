@@ -50,7 +50,11 @@ import {
     buildUserTabularReviewsExport,
     userExportFilename,
 } from "../lib/userDataExport";
-import { signSession } from "../lib/session";
+import {
+    exposeLegacyBearerTokens,
+    setAuthCookies,
+} from "../lib/authCookies";
+import { issueSession, rotateSessionToken } from "../lib/userSessions";
 import { validatePublicUrl } from "../lib/outboundNetwork";
 import { resolveUtilityModel } from "../lib/userSettings";
 import {
@@ -674,14 +678,29 @@ userRouter.patch(
 
 // Re-mint the caller's session token with mfaVerified=true after a successful
 // TOTP challenge, so subsequent requests clear the step-up gate.
-function mintVerifiedToken(res: import("express").Response): string {
-    return signSession({
+async function mintVerifiedSession(res: import("express").Response) {
+    const user = {
         sub: res.locals.userId as string,
         email: (res.locals.userEmail as string) ?? "",
         ldapUid: (res.locals.ldapUid as string) ?? "",
         mfaVerified: true,
         mfaLoginRequired: false,
-    });
+    };
+    const existingSessionId = res.locals.sessionId;
+    const token =
+        typeof existingSessionId === "string"
+            ? rotateSessionToken(user, existingSessionId)
+            : (await issueSession(user)).token;
+    setAuthCookies(res, token);
+    return {
+        ...(exposeLegacyBearerTokens() ? { token } : {}),
+        user: {
+            id: user.sub,
+            email: user.email,
+            mfaVerified: true,
+            mfaLoginRequired: false,
+        },
+    };
 }
 
 function readMfaCode(body: unknown): string | null {
@@ -759,7 +778,7 @@ userRouter.post("/security/mfa/verify", requireAuth, async (req, res) => {
                 .json({ detail: "That code is incorrect or expired." });
         }
         if (!factor.verified) await markVerified(userId, db);
-        res.json({ token: mintVerifiedToken(res) });
+        res.json(await mintVerifiedSession(res));
     } catch (err) {
         res.status(500).json({ detail: errorMessage(err) });
     }
@@ -785,7 +804,7 @@ userRouter.post("/security/mfa/challenge", requireSession, async (req, res) => {
                 .status(400)
                 .json({ detail: "That code is incorrect or expired." });
         }
-        res.json({ token: mintVerifiedToken(res) });
+        res.json(await mintVerifiedSession(res));
     } catch (err) {
         res.status(500).json({ detail: errorMessage(err) });
     }

@@ -15,7 +15,7 @@ const authGlassCardClassName =
 export default function VerifyMfaPage() {
     const router = useRouter();
     const searchParams = useSearchParams();
-    const { user, authLoading, signOut, applySessionToken } = useAuth();
+    const { user, authLoading, signOut, applySessionUser } = useAuth();
     const [enrolled, setEnrolled] = useState(false);
     const [code, setCode] = useState("");
     const [loading, setLoading] = useState(true);
@@ -72,8 +72,8 @@ export default function VerifyMfaPage() {
         setVerifying(true);
         setError(null);
         try {
-            const token = await challengeMfa(code.trim());
-            applySessionToken(token);
+            const sessionUser = await challengeMfa(code.trim());
+            applySessionUser(sessionUser);
             setCode("");
             router.replace(nextPath);
         } catch (verifyError) {

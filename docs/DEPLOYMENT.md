@@ -243,10 +243,9 @@ so you are not fixing one firewall rule per restart.
 
 ## Notes & hardening
 
-- **CORS** is set to `FRONTEND_URL: "*"` (reflect any origin) in the base file for
-  easy LAN access; auth is Bearer-token (not cookies), so this is acceptable
-  internally. The production overlay pins it to `APP_PUBLIC_URL`.
-- **HTTPS**: the compose stack serves plain HTTP. LDAP passwords and session JWTs
+- **CORS/origin policy** must use the exact frontend origin in production. Cookie
+  authentication makes wildcard reflection unsafe, and production startup rejects it.
+- **HTTPS**: the compose stack serves plain HTTP. LDAP passwords and session cookies
   travel in the clear — fine on a trusted LAN, **not** for the public internet.
   Put a reverse proxy (Caddy/nginx) with TLS in front, point `APP_PUBLIC_URL` at
   it, and set `TRUST_PROXY_HOPS` to the number of proxies so rate limiting sees
@@ -254,6 +253,8 @@ so you are not fixing one firewall rule per restart.
   terminate TLS for **both** the app and the API (either two hostnames, or one
   hostname with `/api` routed to `backend:3001` plus
   `NEXT_PUBLIC_API_BASE_URL` set to match).
+  The local compose file therefore sets `COOKIE_SECURE=false`; never carry that
+  override into an internet-facing or Kubernetes deployment.
 - **Custom LLM**: if you use a self-hosted OpenAI-compatible endpoint on the
   *host* (e.g. Ollama on `localhost:11434`), the backend container can't reach
   the host via `localhost`. Set `CUSTOM_LLM_BASE_URL` to the host's LAN IP (or
