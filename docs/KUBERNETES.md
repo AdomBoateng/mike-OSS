@@ -8,6 +8,10 @@ live outside the cluster.
 Read [What will bite you](#what-will-bite-you) before the first deploy. Most of
 it is not guessable from the manifests.
 
+For the ordered list of things to *do* — credentials, CI variables, checks, and
+the order to do them in — see **[UAT-PROD-RUNBOOK.md](UAT-PROD-RUNBOOK.md)**.
+This page is the reasoning behind the manifests; that one is the checklist.
+
 ## Shape
 
 ```
