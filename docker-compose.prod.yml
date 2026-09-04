@@ -39,7 +39,9 @@ services:
       # Number of proxy hops in front of the app. Rate limiting keys on the
       # client IP, so this must match the reverse proxy chain or one visitor's
       # limit applies to everyone (too low) / anyone can spoof theirs (too high).
-      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      # This compose file publishes the backend directly. Set to 1 only when a
+      # real reverse proxy is added in front of it.
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }

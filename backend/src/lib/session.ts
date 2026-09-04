@@ -15,6 +15,8 @@ export interface SessionClaims {
    * factor). A successful challenge re-issues the token with this set true.
    */
   mfaVerified?: boolean;
+  /** Whether ordinary API access must wait for login-time TOTP. */
+  mfaLoginRequired?: boolean;
 }
 
 const DEFAULT_TTL: SignOptions["expiresIn"] = "12h";
@@ -45,12 +47,17 @@ export function verifySession(token: string): SessionClaims | null {
         email?: string;
         ldapUid?: string;
         mfaVerified?: boolean;
+        mfaLoginRequired?: boolean;
       };
       return {
         sub: d.sub,
         email: d.email ?? "",
         ldapUid: d.ldapUid ?? "",
         mfaVerified: d.mfaVerified === true,
+        mfaLoginRequired:
+          typeof d.mfaLoginRequired === "boolean"
+            ? d.mfaLoginRequired
+            : undefined,
       };
     }
     return null;

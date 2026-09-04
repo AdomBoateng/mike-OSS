@@ -17,6 +17,11 @@ import type {
 import { customModelName } from "./models";
 import { Agent, fetch as undiciFetch } from "undici";
 import { createRawLlmStreamRecorder, logRawLlmStream } from "./rawStreamLog";
+import {
+  guardedPublicFetch,
+  publicNetworkLookup,
+  validatePublicUrl,
+} from "../outboundNetwork";
 
 const MAX_OUTPUT_TOKENS = 16384;
 
@@ -206,7 +211,7 @@ function throwIfAborted(signal?: AbortSignal) {
  */
 let streamDispatcher: { key: string; agent: Agent } | undefined;
 
-function getStreamDispatcher(): Agent {
+function getStreamDispatcher(guardPublicNetwork: boolean, streaming: boolean): Agent {
   // Read lazily and re-key on the values, matching how the rest of this
   // codebase resolves config: an env change takes effect without a re-import,
   // and tests do not have to defeat module caching.
@@ -214,14 +219,28 @@ function getStreamDispatcher(): Agent {
   const headersTimeout = Number(
     process.env.CUSTOM_LLM_HEADERS_TIMEOUT_MS ?? "120000",
   );
-  const key = `${bodyTimeout}:${headersTimeout}`;
+  const effectiveBodyTimeout = streaming ? bodyTimeout : 120_000;
+  const key = `${effectiveBodyTimeout}:${headersTimeout}:${guardPublicNetwork}`;
   if (streamDispatcher?.key !== key) {
     streamDispatcher = {
       key,
-      agent: new Agent({ bodyTimeout, headersTimeout }),
+      agent: new Agent({
+        bodyTimeout: effectiveBodyTimeout,
+        headersTimeout,
+        connect: {
+          ...(guardPublicNetwork ? { lookup: publicNetworkLookup } : {}),
+          timeout: 10_000,
+        },
+        connections: 8,
+        maxResponseSize: 5 * 1024 * 1024,
+      }),
     };
   }
   return streamDispatcher.agent;
+}
+
+function isUserControlledEndpoint(apiKeys?: UserApiKeys) {
+  return apiKeys?.customBaseUrlSource === "user";
 }
 
 /**
@@ -279,13 +298,21 @@ async function postChatCompletion(params: {
   headers: Record<string, string>;
   body: Record<string, unknown>;
   signal?: AbortSignal;
+  guardPublicNetwork?: boolean;
 }): Promise<Response> {
   // undici's own fetch, not the global one: a dispatcher only applies when the
   // Agent and the fetch come from the same undici instance, and Node's global
   // fetch is backed by its own bundled copy. Passing this Agent to global
   // fetch silently fails the request instead of configuring it.
   const streaming = params.body.stream === true;
-  const response = (await undiciFetch(`${params.baseUrl}/chat/completions`, {
+  const destination = `${params.baseUrl}/chat/completions`;
+  if (params.guardPublicNetwork) {
+    await validatePublicUrl(destination, {
+      label: "Custom LLM URL",
+      httpsOnly: true,
+    });
+  }
+  const response = (await undiciFetch(destination, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -295,7 +322,15 @@ async function postChatCompletion(params: {
     signal: params.signal,
     // Only streaming calls need the longer inactivity window; a non-streaming
     // completion that goes quiet for minutes really is stuck.
-    ...(streaming ? { dispatcher: getStreamDispatcher() } : {}),
+    ...(streaming || params.guardPublicNetwork
+      ? {
+          dispatcher: getStreamDispatcher(
+            !!params.guardPublicNetwork,
+            streaming,
+          ),
+        }
+      : {}),
+    redirect: "manual",
   })) as unknown as Response;
 
   if (!response.ok) {
@@ -355,6 +390,7 @@ export async function streamCustom(
   } = params;
   const maxIter = params.maxIterations ?? 10;
   const baseUrl = customBaseUrl(apiKeys);
+  const guardPublicNetwork = isUserControlledEndpoint(apiKeys);
   const headers = authHeaders(apiKeys);
   const rawModel = customModelName(model);
   const chatTools: OpenAIToolSchema[] = tools;
@@ -383,6 +419,7 @@ export async function streamCustom(
         max_tokens: MAX_OUTPUT_TOKENS,
       },
       signal: params.abortSignal,
+      guardPublicNetwork,
     });
     if (!response.body) return;
 
@@ -460,6 +497,7 @@ export async function streamCustom(
           max_tokens: MAX_OUTPUT_TOKENS,
         },
         signal: params.abortSignal,
+        guardPublicNetwork,
       });
       if (!response.body) throw new Error("Custom LLM response had no body");
 
@@ -631,6 +669,7 @@ export async function completeCustomText(params: {
       max_tokens: params.maxTokens ?? 512,
       stream: false,
     },
+    guardPublicNetwork: isUserControlledEndpoint(params.apiKeys),
   });
   const json = (await response.json()) as {
     choices?: { message?: { content?: string | null } }[];
@@ -679,6 +718,7 @@ export async function completeCustomVision(params: {
       max_tokens: params.maxTokens ?? 4000,
       stream: false,
     },
+    guardPublicNetwork: isUserControlledEndpoint(params.apiKeys),
   });
   const json = (await response.json()) as {
     choices?: { message?: { content?: string | null } }[];
@@ -697,13 +737,19 @@ export async function listCustomModels(
   apiKeys?: UserApiKeys,
 ): Promise<CustomModelOption[]> {
   const baseUrl = customBaseUrl(apiKeys);
-  const response = await fetch(`${baseUrl}/models`, {
+  const requestInit = {
     method: "GET",
     headers: {
       Accept: "application/json",
       ...authHeaders(apiKeys),
     },
-  });
+  };
+  const response = isUserControlledEndpoint(apiKeys)
+    ? await guardedPublicFetch(`${baseUrl}/models`, requestInit, {
+        label: "Custom LLM URL",
+        httpsOnly: true,
+      })
+    : await fetch(`${baseUrl}/models`, requestInit);
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(

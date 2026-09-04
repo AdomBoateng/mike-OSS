@@ -19,12 +19,27 @@ describe("session tokens", () => {
   test("sign then verify round-trips the claims", () => {
     const token = signSession(claims);
     // verifySession normalises mfaVerified to false when the claim is absent.
-    assert.deepEqual(verifySession(token), { ...claims, mfaVerified: false });
+    assert.deepEqual(verifySession(token), {
+      ...claims,
+      mfaVerified: false,
+      mfaLoginRequired: undefined,
+    });
   });
 
   test("preserves mfaVerified=true through a round-trip", () => {
     const token = signSession({ ...claims, mfaVerified: true });
     assert.equal(verifySession(token)?.mfaVerified, true);
+  });
+
+  test("preserves the login-time MFA requirement", () => {
+    const token = signSession({
+      ...claims,
+      mfaVerified: false,
+      mfaLoginRequired: true,
+    });
+    const decoded = verifySession(token);
+    assert.equal(decoded?.mfaVerified, false);
+    assert.equal(decoded?.mfaLoginRequired, true);
   });
 
   test("verify rejects a garbage token", () => {

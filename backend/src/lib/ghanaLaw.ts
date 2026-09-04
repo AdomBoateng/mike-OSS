@@ -40,6 +40,48 @@ const DOWNLOAD_TIMEOUT_MS = Number(
 );
 /** Refuse absurdly large PDFs rather than spend minutes extracting them. */
 const MAX_PDF_BYTES = Number(process.env.GHANA_LAW_MAX_PDF_BYTES ?? "26214400");
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function repositoryUrl(raw: string): string {
+  const base = new URL(ghanaLawBaseUrl());
+  const target = new URL(raw, base);
+  if (target.origin !== base.origin) {
+    throw new Error("Ghana law repository returned a cross-origin link.");
+  }
+  return target.toString();
+}
+
+async function readBodyWithinLimit(
+  response: Response,
+  maxBytes: number,
+): Promise<ArrayBuffer> {
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error("Ghana law PDF exceeds the download size limit.");
+  }
+  if (!response.body) return new ArrayBuffer(0);
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error("Ghana law PDF exceeds the download size limit.");
+    }
+    chunks.push(value);
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined.buffer;
+}
 
 /**
  * Collections that hold primary legislation, by name as they appear in the
@@ -107,7 +149,7 @@ export interface LegislationText {
 }
 
 async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(repositoryUrl(url), {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -307,12 +349,17 @@ async function resolvePdfBitstream(
   const pdf = streams.find((b) => /\.pdf$/i.test(b.name ?? "")) ?? streams[0];
   const content = pdf?._links?.content?.href;
   if (!pdf || !content) return null;
-  return { href: content, name: pdf.name ?? "document.pdf", bytes: pdf.sizeBytes ?? 0 };
+  return {
+    href: repositoryUrl(content),
+    name: pdf.name ?? "document.pdf",
+    bytes: pdf.sizeBytes ?? 0,
+  };
 }
 
 export async function getLegislationItem(
   uuid: string,
 ): Promise<LegislationItem | null> {
+  if (!UUID_RE.test(uuid)) return null;
   try {
     const data = await getJson<{
       uuid?: string;
@@ -390,7 +437,11 @@ export async function fetchLegislationText(
   if (!res.ok) {
     throw new Error(`Could not download "${pdf.name}" (${res.status}).`);
   }
-  const raw = await res.arrayBuffer();
+  const raw = await readBodyWithinLimit(res, MAX_PDF_BYTES);
+  const header = Buffer.from(raw.slice(0, Math.min(raw.byteLength, 1024)));
+  if (header.indexOf(Buffer.from("%PDF-")) < 0) {
+    throw new Error(`"${pdf.name}" is not a valid PDF response.`);
+  }
   // pdf.js takes ownership of the buffer it is handed and detaches it, so give
   // it a copy — `raw` is still needed for OCR when there turns out to be no
   // text layer.

@@ -36,6 +36,12 @@ import {
     filterAccessibleDocumentIds,
 } from "../lib/access";
 import { safeErrorLog, safeErrorMessage } from "../lib/safeError";
+import {
+    normalizeSharedEmails,
+    parseChatMessages,
+    parseDocumentIds,
+    parseReviewColumns,
+} from "../lib/requestValidation";
 
 function formatPromptSuffix(format?: string, tags?: string[]): string {
     switch (format) {
@@ -125,6 +131,18 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             project_id?: string;
         };
 
+    const parsedDocumentIds = parseDocumentIds(document_ids);
+    if (!parsedDocumentIds.ok) {
+        return void res.status(400).json({ detail: parsedDocumentIds.detail });
+    }
+    const parsedColumns = parseReviewColumns(columns_config);
+    if (!parsedColumns.ok) {
+        return void res.status(400).json({ detail: parsedColumns.detail });
+    }
+    if (title !== undefined && (typeof title !== "string" || title.length > 200)) {
+        return void res.status(400).json({ detail: "title is invalid" });
+    }
+
     const db = createServerSupabase();
     if (project_id) {
         const access = await checkProjectAccess(
@@ -136,20 +154,18 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
         if (!access.ok)
             return void res.status(404).json({ detail: "Project not found" });
     }
-    const allowedDocumentIds = Array.isArray(document_ids)
-        ? await filterAccessibleDocumentIds(
-              document_ids,
-              userId,
-              userEmail,
-              db,
-          )
-        : [];
+    const allowedDocumentIds = await filterAccessibleDocumentIds(
+        parsedDocumentIds.ids,
+        userId,
+        userEmail,
+        db,
+    );
     const { data: review, error } = await db
         .from("tabular_reviews")
         .insert({
             user_id: userId,
             title: title ?? null,
-            columns_config,
+            columns_config: parsedColumns.columns,
             document_ids: allowedDocumentIds,
             project_id: project_id ?? null,
             workflow_id: workflow_id ?? null,
@@ -162,7 +178,7 @@ tabularRouter.post("/", requireAuth, async (req, res) => {
             .json({ detail: error?.message ?? "Failed to create review" });
 
     const cells = allowedDocumentIds.flatMap((docId) =>
-        columns_config.map((col) => ({
+        parsedColumns.columns.map((col) => ({
             review_id: review.id,
             document_id: docId,
             column_index: col.index,
@@ -397,23 +413,16 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
     // shared_with edits are owner-only — gated below after we know who's
     // making the call. Normalize lowercase + dedupe + drop empties.
     let sharedWithUpdate: string[] | undefined;
-    if (Array.isArray(req.body.shared_with)) {
-        const normalizedUserEmail = userEmail?.trim().toLowerCase();
-        const seen = new Set<string>();
-        const cleaned: string[] = [];
-        for (const raw of req.body.shared_with) {
-            if (typeof raw !== "string") continue;
-            const e = raw.trim().toLowerCase();
-            if (!e || seen.has(e)) continue;
-            if (normalizedUserEmail && e === normalizedUserEmail) {
-                return void res.status(400).json({
-                    detail: "You cannot share a tabular review with yourself.",
-                });
-            }
-            seen.add(e);
-            cleaned.push(e);
+    if ("shared_with" in req.body) {
+        const parsed = normalizeSharedEmails(
+            req.body.shared_with,
+            userEmail,
+            "a tabular review",
+        );
+        if (!parsed.ok) {
+            return void res.status(400).json({ detail: parsed.detail });
         }
-        sharedWithUpdate = cleaned;
+        sharedWithUpdate = parsed.emails;
     }
     updates.updated_at = new Date().toISOString();
 
@@ -433,13 +442,29 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
     );
     if (!access.ok)
         return void res.status(404).json({ detail: "Review not found" });
+    let parsedColumnsUpdate: ReturnType<typeof parseReviewColumns> | null = null;
     if (req.body.columns_config != null) {
         if (!access.isOwner) {
             return void res.status(403).json({
                 detail: "Only the review owner can change columns",
             });
         }
-        updates.columns_config = req.body.columns_config;
+        parsedColumnsUpdate = parseReviewColumns(req.body.columns_config);
+        if (!parsedColumnsUpdate.ok) {
+            return void res
+                .status(400)
+                .json({ detail: parsedColumnsUpdate.detail });
+        }
+        updates.columns_config = parsedColumnsUpdate.columns;
+    }
+    const parsedDocumentIdsUpdate =
+        "document_ids" in req.body
+            ? parseDocumentIds(req.body.document_ids)
+            : null;
+    if (parsedDocumentIdsUpdate && !parsedDocumentIdsUpdate.ok) {
+        return void res
+            .status(400)
+            .json({ detail: parsedDocumentIdsUpdate.detail });
     }
     if (sharedWithUpdate !== undefined) {
         if (!access.isOwner)
@@ -483,8 +508,8 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
 
     let persistedDocumentIds: string[] | undefined;
     if (
-        Array.isArray(req.body.columns_config) ||
-        Array.isArray(req.body.document_ids)
+        parsedColumnsUpdate?.ok ||
+        parsedDocumentIdsUpdate?.ok
     ) {
         const { data: existingCells } = await db
             .from("tabular_cells")
@@ -498,9 +523,9 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
 
         let documentIds: string[];
 
-        if (Array.isArray(req.body.document_ids)) {
+        if (parsedDocumentIdsUpdate?.ok) {
             // document_ids is the new source of truth — delete removed docs' cells
-            const requestedDocIds = req.body.document_ids as string[];
+            const requestedDocIds = parsedDocumentIdsUpdate.ids;
             const existingDocIds = (existingCells ?? []).map(
                 (cell) => cell.document_id,
             );
@@ -544,7 +569,7 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
             ];
         }
 
-        if (Array.isArray(req.body.document_ids)) {
+        if (parsedDocumentIdsUpdate?.ok) {
             persistedDocumentIds = documentIds;
             const { error: documentIdsError } = await db
                 .from("tabular_reviews")
@@ -559,8 +584,8 @@ tabularRouter.patch("/:reviewId", requireAuth, async (req, res) => {
                 });
         }
 
-        const activeColumns = Array.isArray(req.body.columns_config)
-            ? req.body.columns_config
+        const activeColumns = parsedColumnsUpdate?.ok
+            ? parsedColumnsUpdate.columns
             : (updatedReview.columns_config ?? []);
         const newCells = documentIds.flatMap((documentId) =>
             activeColumns
@@ -846,7 +871,7 @@ tabularRouter.post("/:reviewId/generate", requireAuth, async (req, res) => {
     }
 
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-store");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
@@ -1170,16 +1195,22 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
     const userEmail = res.locals.userEmail as string | undefined;
     const { reviewId } = req.params;
     const {
-        messages,
+        messages: rawMessages,
         chat_id: existingChatId,
         review_title: clientReviewTitle,
         project_name: clientProjectName,
     } = req.body as {
-        messages: ChatMessage[];
+        messages: unknown;
         chat_id?: string;
         review_title?: string;
         project_name?: string;
     };
+
+    const parsedMessages = parseChatMessages(rawMessages);
+    if (!parsedMessages.ok) {
+        return void res.status(400).json({ detail: parsedMessages.detail });
+    }
+    const messages = parsedMessages.messages;
 
     const lastUser = [...(messages ?? [])]
         .reverse()
@@ -1325,7 +1356,7 @@ tabularRouter.post("/:reviewId/chat", requireAuth, async (req, res) => {
         });
 
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-store");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();

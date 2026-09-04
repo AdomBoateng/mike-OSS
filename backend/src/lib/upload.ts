@@ -11,7 +11,14 @@ const memoryUpload = multer({
   limits: {
     fileSize: MAX_UPLOAD_SIZE_BYTES,
     files: 1,
-  },
+    fields: 10,
+    fieldNameSize: 100,
+    fieldSize: 10 * 1024,
+    parts: 12,
+    // Multer 2.3 security control: reject sparse-array field names before the
+    // append-field parser can synchronously walk a huge numeric index.
+    fieldArrayIndexLimit: 100,
+  } as multer.Options["limits"] & { fieldArrayIndexLimit: number },
 });
 
 export function singleFileUpload(fieldName: string): RequestHandler {

@@ -1,8 +1,9 @@
 import crypto from "crypto";
-import dns from "dns/promises";
-import net from "net";
 import {
-    BLOCKED_METADATA_HOSTS,
+    guardedPublicFetch,
+    validatePublicUrl,
+} from "../outboundNetwork";
+import {
     HEADER_NAME_RE,
     MAX_CUSTOM_HEADER_VALUE_LENGTH,
     MAX_CUSTOM_HEADERS,
@@ -172,14 +173,13 @@ function truthyAnnotation(
 export function toolRequiresConfirmation(
     annotations: Record<string, unknown> | null | undefined,
 ) {
-    // Gate only genuinely destructive tools behind human confirmation. We do
-    // NOT gate on openWorldHint (almost every useful connector — Gmail, Slack,
-    // GitHub — is "open world", so gating on it disables everything), and we
-    // require readOnlyHint to be *explicitly* false rather than merely absent
-    // (a missing hint must not be treated the same as readOnlyHint:false).
+    // MCP annotations are supplied by the remote server. A missing read-only
+    // declaration is not evidence that a tool is safe for autonomous calls.
+    // Until an interactive per-call confirmation flow exists, expose only
+    // tools that explicitly declare readOnlyHint:true and are not destructive.
     return (
         truthyAnnotation(annotations, "destructiveHint") ||
-        annotations?.readOnlyHint === false
+        annotations?.readOnlyHint !== true
     );
 }
 
@@ -223,74 +223,11 @@ export function toConnectorSummary(
     };
 }
 
-function isPrivateIpv4(ip: string) {
-    const parts = ip.split(".").map((part) => Number.parseInt(part, 10));
-    if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
-        return true;
-    }
-    const [a, b] = parts;
-    return (
-        a === 0 ||
-        a === 10 ||
-        a === 127 ||
-        (a === 100 && b >= 64 && b <= 127) ||
-        (a === 169 && b === 254) ||
-        (a === 172 && b >= 16 && b <= 31) ||
-        (a === 192 && b === 168) ||
-        (a === 192 && b === 0) ||
-        (a === 198 && (b === 18 || b === 19)) ||
-        a >= 224
-    );
-}
-
-function isPrivateIpv6(ip: string) {
-    const normalized = ip.toLowerCase();
-    if (normalized === "::1" || normalized === "::") return true;
-    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
-    if (/^fe[89ab]:/.test(normalized)) return true;
-    const ipv4Tail = normalized.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return ipv4Tail ? isPrivateIpv4(ipv4Tail[1]) : false;
-}
-
-function isBlockedIp(ip: string) {
-    const family = net.isIP(ip);
-    if (family === 4) return isPrivateIpv4(ip);
-    if (family === 6) return isPrivateIpv6(ip);
-    return true;
-}
-
 export async function validateRemoteMcpUrl(rawUrl: string): Promise<string> {
-    let url: URL;
-    try {
-        url = new URL(rawUrl);
-    } catch {
-        throw new Error("MCP server URL must be a valid URL.");
-    }
-    if (url.protocol !== "https:") {
-        throw new Error("MCP server URL must use HTTPS.");
-    }
-    url.username = "";
-    url.password = "";
-    url.hash = "";
-
-    const hostname = url.hostname.toLowerCase();
-    if (
-        hostname === "localhost" ||
-        hostname.endsWith(".localhost") ||
-        BLOCKED_METADATA_HOSTS.has(hostname)
-    ) {
-        throw new Error("MCP server URL points to a blocked host.");
-    }
-
-    const literalFamily = net.isIP(hostname);
-    const addresses = literalFamily
-        ? [{ address: hostname }]
-        : await dns.lookup(hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(({ address }) => isBlockedIp(address))) {
-        throw new Error("MCP server URL resolves to a blocked network address.");
-    }
-
-    return url.toString();
+    return validatePublicUrl(rawUrl, {
+        label: "MCP server URL",
+        httpsOnly: true,
+    });
 }
 
 export function headersForAuth(config: McpConnectorAuthConfig) {
@@ -356,14 +293,10 @@ export async function guardedFetch(
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1],
 ) {
-    const url =
-        typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input.url;
-    await validateRemoteMcpUrl(url);
-    return fetch(input, { ...init, redirect: "manual" });
+    return guardedPublicFetch(input, init, {
+        label: "MCP server URL",
+        httpsOnly: true,
+    });
 }
 
 export function base64Url(buffer: Buffer) {

@@ -24,6 +24,7 @@ import {
     compactWithNotice,
     type ChatApiMessage,
 } from "../lib/contextCompaction";
+import { parseChatMessages } from "../lib/requestValidation";
 
 const PROJECT_SYSTEM_PROMPT_EXTRA = `PROJECT CONTEXT:
 You are operating within a project folder that contains a collection of legal documents the user has organised for a single matter. The user's questions will usually refer to one or more documents in this project — your job is to find the relevant files to work on. Use list_documents to see what is available and fetch_documents / read_document to pull in any documents you need before answering.
@@ -40,14 +41,19 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     const userId = res.locals.userId as string;
     const userEmail = res.locals.userEmail as string | undefined;
     const { projectId } = req.params;
-    const { messages, chat_id, model, displayed_doc, attached_documents } =
+    const { messages: rawMessages, chat_id, model, displayed_doc, attached_documents } =
         req.body as {
-            messages: ChatMessage[];
+            messages: unknown;
             chat_id?: string;
             model?: string;
             displayed_doc?: { filename: string; document_id: string };
             attached_documents?: { filename: string; document_id: string }[];
         };
+    const parsedMessages = parseChatMessages(rawMessages);
+    if (!parsedMessages.ok) {
+        return void res.status(400).json({ detail: parsedMessages.detail });
+    }
+    const messages = parsedMessages.messages;
 
     const db = createServerSupabase();
 
@@ -189,7 +195,7 @@ projectChatRouter.post("/", requireAuth, async (req, res) => {
     const workflowStore = await buildWorkflowStore(userId, userEmail, db);
 
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-store");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();

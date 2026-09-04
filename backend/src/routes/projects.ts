@@ -17,6 +17,8 @@ import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
 import { deleteUserProjects } from "../lib/userDataCleanup";
 import { notifyNewCollaborators } from "../lib/projectInvites";
+import { validateDocumentFile } from "../lib/fileValidation";
+import { normalizeSharedEmails } from "../lib/requestValidation";
 
 export const projectsRouter = Router();
 
@@ -183,23 +185,15 @@ projectsRouter.post("/", requireAuth, async (req, res) => {
   };
   if (!name?.trim())
     return void res.status(400).json({ detail: "name is required" });
-  const normalizedUserEmail = userEmail?.trim().toLowerCase();
-  const cleanedSharedWith: string[] = [];
-  const seenSharedEmails = new Set<string>();
-  if (Array.isArray(shared_with)) {
-    for (const raw of shared_with) {
-      if (typeof raw !== "string") continue;
-      const e = raw.trim().toLowerCase();
-      if (!e || seenSharedEmails.has(e)) continue;
-      if (normalizedUserEmail && e === normalizedUserEmail) {
-        return void res
-          .status(400)
-          .json({ detail: "You cannot share a project with yourself." });
-      }
-      seenSharedEmails.add(e);
-      cleanedSharedWith.push(e);
-    }
+  const parsedSharedWith = normalizeSharedEmails(
+    shared_with ?? [],
+    userEmail,
+    "a project",
+  );
+  if (!parsedSharedWith.ok) {
+    return void res.status(400).json({ detail: parsedSharedWith.detail });
   }
+  const cleanedSharedWith = parsedSharedWith.emails;
 
   const db = createServerSupabase();
   const { data, error } = await db
@@ -368,25 +362,17 @@ projectsRouter.patch("/:projectId", requireAuth, async (req, res) => {
   if (req.body.cm_number != null) updates.cm_number = req.body.cm_number;
   // The normalised collaborator list, when shared_with is part of this update.
   let nextSharedWith: string[] | null = null;
-  if (Array.isArray(req.body.shared_with)) {
-    // Normalise: lowercase + dedupe + drop empties.
-    const normalizedUserEmail = userEmail?.trim().toLowerCase();
-    const seen = new Set<string>();
-    const cleaned: string[] = [];
-    for (const raw of req.body.shared_with) {
-      if (typeof raw !== "string") continue;
-      const e = raw.trim().toLowerCase();
-      if (!e || seen.has(e)) continue;
-      if (normalizedUserEmail && e === normalizedUserEmail) {
-        return void res
-          .status(400)
-          .json({ detail: "You cannot share a project with yourself." });
-      }
-      seen.add(e);
-      cleaned.push(e);
+  if ("shared_with" in req.body) {
+    const parsed = normalizeSharedEmails(
+      req.body.shared_with,
+      userEmail,
+      "a project",
+    );
+    if (!parsed.ok) {
+      return void res.status(400).json({ detail: parsed.detail });
     }
-    updates.shared_with = cleaned;
-    nextSharedWith = cleaned;
+    updates.shared_with = parsed.emails;
+    nextSharedWith = parsed.emails;
   }
 
   const db = createServerSupabase();
@@ -967,6 +953,11 @@ export async function handleDocumentUpload(
       .json({
         detail: `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
       });
+
+  const validation = await validateDocumentFile(file.buffer, suffix);
+  if (!validation.ok) {
+    return void res.status(400).json({ detail: validation.detail });
+  }
 
   const content = file.buffer;
   const { data: doc, error: insertErr } = await db

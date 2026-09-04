@@ -25,7 +25,7 @@ export function MfaLoginGate({ children }: { children: ReactNode }) {
     const needsStepUp =
         !!user &&
         user.mfaVerified !== true &&
-        profile?.mfaOnLogin === true &&
+        (user.mfaLoginRequired === true || profile?.mfaOnLogin === true) &&
         !isPublic;
 
     useEffect(() => {

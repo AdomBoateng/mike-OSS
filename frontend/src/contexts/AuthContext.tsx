@@ -21,6 +21,8 @@ interface User {
     pendingEmail?: string | null;
     /** Whether this session has cleared a TOTP step-up (from the token claim). */
     mfaVerified: boolean;
+    /** Whether TOTP is required before ordinary API access for this login. */
+    mfaLoginRequired: boolean;
 }
 
 interface AuthContextType {
@@ -41,6 +43,7 @@ interface TokenClaims {
     email?: string;
     exp?: number;
     mfaVerified?: boolean;
+    mfaLoginRequired?: boolean;
 }
 
 function decodeToken(token: string): TokenClaims | null {
@@ -63,6 +66,7 @@ function userFromToken(token: string): User | null {
         email: claims.email ?? "",
         pendingEmail: null,
         mfaVerified: claims.mfaVerified === true,
+        mfaLoginRequired: claims.mfaLoginRequired === true,
     };
 }
 
@@ -89,6 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 email: result.user.email ?? "",
                 pendingEmail: null,
                 mfaVerified: false,
+                mfaLoginRequired: false,
             },
         );
     }, []);

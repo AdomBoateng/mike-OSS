@@ -28,6 +28,10 @@ process.on("unhandledRejection", (reason) => {
 });
 process.on("uncaughtException", (err) => {
   console.error("[server] uncaught exception:", err);
+  // An uncaught exception can leave application state corrupted. Let the
+  // container/process supervisor replace this instance instead of continuing
+  // to serve traffic from an unknown state.
+  process.exit(1);
 });
 
 const app = express();
@@ -38,15 +42,21 @@ const isProduction = process.env.NODE_ENV === "production";
 // secret or unreachable-by-config dependency stops the process here rather than
 // surfacing as a 500 on someone's first sign-in.
 //
-// Note this must not throw at module scope: the uncaughtException handler above
-// would catch it and the process would exit 0, reporting a clean shutdown to
-// whatever supervises it. start() below runs it and exits non-zero instead.
+// Keep validation inside start() so startup failures follow its explicit
+// non-zero exit path and produce a clear diagnostic.
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function envNonNegativeInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function minutes(value: number): number {
@@ -116,12 +126,24 @@ const loginLimiter = makeLimiter({
   message: "Too many login attempts. Please try again later.",
 });
 
-function jsonLimitForPath(path: string): string {
-  return "50mb";
+const mfaLimiter = makeLimiter({
+  windowMs: minutes(envInt("RATE_LIMIT_MFA_WINDOW_MINUTES", 15)),
+  max: envInt("RATE_LIMIT_MFA_MAX", 10),
+  message: "Too many verification attempts. Please try again later.",
+});
+
+function jsonBodyLimit(): string {
+  const configured = process.env.JSON_BODY_LIMIT?.trim();
+  return configured && /^\d+(?:kb|mb)$/i.test(configured)
+    ? configured
+    : "5mb";
 }
 
 app.disable("x-powered-by");
-app.set("trust proxy", envInt("TRUST_PROXY_HOPS", 1));
+// Directly-published compose deployments have no trusted proxy. Defaulting to
+// one hop lets a client spoof X-Forwarded-For and rotate the rate-limit key.
+// Kubernetes explicitly sets this to 1 because its ingress is one real hop.
+app.set("trust proxy", envNonNegativeInt("TRUST_PROXY_HOPS", 0));
 
 // Mounted under a path prefix when one hostname serves both apps and the
 // ingress routes /api to this service (see docs/KUBERNETES.md). Stripping it
@@ -160,6 +182,14 @@ app.use(
   }),
 );
 
+// API responses contain legal documents, user settings, and bearer tokens.
+// Do not let browsers or shared intermediaries retain them by default.
+app.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  next();
+});
+
 // CORS. FRONTEND_URL is a comma-separated allowlist of origins. Set it to "*"
 // to reflect any request origin — useful for LAN access where the app is reached
 // by the server's IP (auth is Bearer-token, not cookie, so reflecting is safe
@@ -179,7 +209,9 @@ app.use(
           if (!origin || corsOrigins.includes(origin)) callback(null, true);
           else callback(null, false);
         },
-    credentials: true,
+    // Authentication is an explicit Bearer header; cross-origin requests do
+    // not need ambient cookies or HTTP authentication credentials.
+    credentials: false,
   }),
 );
 
@@ -205,10 +237,23 @@ app.delete("/user/account", dataDeleteLimiter);
 app.delete("/user/chats", dataDeleteLimiter);
 app.delete("/user/projects", dataDeleteLimiter);
 app.delete("/user/tabular-reviews", dataDeleteLimiter);
+// The same router is intentionally mounted at /user and /users. Mirror every
+// route-specific limiter so the alias cannot be used to bypass it.
+app.get("/users/export", exportLimiter);
+app.get("/users/chats/export", exportLimiter);
+app.get("/users/tabular-reviews/export", exportLimiter);
+app.delete("/users/account", dataDeleteLimiter);
+app.delete("/users/chats", dataDeleteLimiter);
+app.delete("/users/projects", dataDeleteLimiter);
+app.delete("/users/tabular-reviews", dataDeleteLimiter);
+app.post("/user/security/mfa/verify", mfaLimiter);
+app.post("/user/security/mfa/challenge", mfaLimiter);
+app.post("/users/security/mfa/verify", mfaLimiter);
+app.post("/users/security/mfa/challenge", mfaLimiter);
 app.post("/auth/login", loginLimiter);
 
 app.use((req, res, next) =>
-  express.json({ limit: jsonLimitForPath(req.path) })(req, res, next),
+  express.json({ limit: jsonBodyLimit() })(req, res, next),
 );
 
 app.use("/chat", chatRouter);
@@ -240,11 +285,12 @@ app.get("/health/ready", async (_req, res) => {
     await dbQuery("select 1", []);
     res.json({ ok: true });
   } catch (err) {
+    console.error("[health/ready] database probe failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     res.status(503).json({
       ok: false,
-      detail: `database unreachable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      detail: "A required service is unavailable.",
     });
   }
 });
@@ -262,20 +308,16 @@ app.get("/health/smtp", requireAuth, async (_req, res) => {
   const cfg = resolveSmtpConfig()!;
   try {
     await verifySmtp();
-    res.json({
-      ok: true,
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[health/smtp] SMTP probe failed", {
       host: cfg.host,
       port: cfg.port,
-      secure: cfg.secure,
-      from: cfg.from,
-      auth: !!cfg.user,
+      error: err instanceof Error ? err.message : String(err),
     });
-  } catch (err) {
     res.status(502).json({
       ok: false,
-      host: cfg.host,
-      port: cfg.port,
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "SMTP verification failed.",
     });
   }
 });

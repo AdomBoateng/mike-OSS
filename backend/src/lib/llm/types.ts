@@ -46,6 +46,8 @@ export type UserApiKeys = {
     custom?: string | null;
     /** Base URL of the custom OpenAI-compatible endpoint, e.g. http://localhost:11434/v1 */
     customBaseUrl?: string | null;
+    /** User URLs are treated as hostile; environment URLs are administrator-trusted. */
+    customBaseUrlSource?: "user" | "env" | null;
 };
 
 export type StreamChatParams = {

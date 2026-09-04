@@ -45,8 +45,7 @@ function parseWwwAuthenticate(value: string | null): string | null {
 }
 
 async function fetchJson(url: string, init?: RequestInit) {
-    await validateRemoteMcpUrl(url);
-    const response = await fetch(url, { ...init, redirect: "manual" });
+    const response = await guardedFetch(url, init);
     if (!response.ok) {
         throw new Error(`Failed to fetch OAuth metadata (${response.status}).`);
     }
@@ -59,9 +58,9 @@ async function fetchJson(url: string, init?: RequestInit) {
 
 async function discoverProtectedResourceMetadataUrl(serverUrl: string) {
     const attempts: Array<() => Promise<Response>> = [
-        () => fetch(serverUrl, { method: "GET", redirect: "manual" }),
+        () => guardedFetch(serverUrl, { method: "GET" }),
         () =>
-            fetch(serverUrl, {
+            guardedFetch(serverUrl, {
                 method: "POST",
                 redirect: "manual",
                 headers: {
@@ -189,8 +188,7 @@ async function registerOAuthClient(
     redirectUri: string,
 ) {
     if (!metadata.registrationEndpoint) return null;
-    await validateRemoteMcpUrl(metadata.registrationEndpoint);
-    const response = await fetch(metadata.registrationEndpoint, {
+    const response = await guardedFetch(metadata.registrationEndpoint, {
         method: "POST",
         redirect: "manual",
         headers: {
@@ -329,8 +327,7 @@ async function refreshOAuthAccessToken(row: OAuthTokenRow, db: Db) {
     });
     if (clientSecret) body.set("client_secret", clientSecret);
     if (row.resource) body.set("resource", row.resource);
-    await validateRemoteMcpUrl(row.token_endpoint);
-    const response = await fetch(row.token_endpoint, {
+    const response = await guardedFetch(row.token_endpoint, {
         method: "POST",
         headers: {
             Accept: "application/json",

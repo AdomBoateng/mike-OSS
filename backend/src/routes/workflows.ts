@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { requireAuth } from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
+import { normalizeSharedEmails } from "../lib/requestValidation";
 
 export const workflowsRouter = Router();
 
@@ -289,22 +290,13 @@ workflowsRouter.post("/:workflowId/share", requireAuth, asyncRoute(async (req, r
   const { workflowId } = req.params;
   const { emails, allow_edit } = req.body as { emails: string[]; allow_edit: boolean };
 
-  if (!emails?.length) return void res.status(400).json({ detail: "emails is required" });
-  const normalizedEmails = [
-    ...new Set(
-      emails
-        .map((email) => email.trim().toLowerCase())
-        .filter(Boolean),
-    ),
-  ];
+  const parsedEmails = normalizeSharedEmails(emails, userEmail, "a workflow");
+  if (!parsedEmails.ok) {
+    return void res.status(400).json({ detail: parsedEmails.detail });
+  }
+  const normalizedEmails = parsedEmails.emails;
   if (normalizedEmails.length === 0) {
     return void res.status(400).json({ detail: "emails is required" });
-  }
-  const normalizedUserEmail = userEmail?.trim().toLowerCase();
-  if (normalizedUserEmail && normalizedEmails.includes(normalizedUserEmail)) {
-    return void res
-      .status(400)
-      .json({ detail: "You cannot share a workflow with yourself." });
   }
 
   const db = createServerSupabase();

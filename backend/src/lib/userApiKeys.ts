@@ -226,8 +226,10 @@ export async function getUserApiKeys(
         apiKeys[provider] = decrypt(row);
     }
 
-    const { url: customBaseUrl } = await getCustomBaseUrl(userId, db);
+    const { url: customBaseUrl, source: customBaseUrlSource } =
+        await getCustomBaseUrl(userId, db);
     apiKeys.customBaseUrl = customBaseUrl;
+    apiKeys.customBaseUrlSource = customBaseUrlSource;
 
     return apiKeys;
 }

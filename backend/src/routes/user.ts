@@ -1,6 +1,10 @@
 import crypto from "crypto";
 import { Router } from "express";
-import { requireAuth, requireMfaIfEnrolled } from "../middleware/auth";
+import {
+    requireAuth,
+    requireMfaIfEnrolled,
+    requireSession,
+} from "../middleware/auth";
 import { createServerSupabase } from "../lib/supabase";
 import { deleteAuthUser } from "../lib/authUsers";
 import {
@@ -47,6 +51,7 @@ import {
     userExportFilename,
 } from "../lib/userDataExport";
 import { signSession } from "../lib/session";
+import { validatePublicUrl } from "../lib/outboundNetwork";
 import { resolveUtilityModel } from "../lib/userSettings";
 import {
     deleteFactor,
@@ -675,6 +680,7 @@ function mintVerifiedToken(res: import("express").Response): string {
         email: (res.locals.userEmail as string) ?? "",
         ldapUid: (res.locals.ldapUid as string) ?? "",
         mfaVerified: true,
+        mfaLoginRequired: false,
     });
 }
 
@@ -687,7 +693,7 @@ function readMfaCode(body: unknown): string | null {
 }
 
 // GET /user/security/mfa — enrollment + session verification status.
-userRouter.get("/security/mfa", requireAuth, async (_req, res) => {
+userRouter.get("/security/mfa", requireSession, async (_req, res) => {
     const userId = res.locals.userId as string;
     const db = createServerSupabase();
     try {
@@ -761,7 +767,7 @@ userRouter.post("/security/mfa/verify", requireAuth, async (req, res) => {
 
 // POST /user/security/mfa/challenge — step-up verification for an enrolled user
 // (login gate + sensitive actions). Re-issues a verified session token.
-userRouter.post("/security/mfa/challenge", requireAuth, async (req, res) => {
+userRouter.post("/security/mfa/challenge", requireSession, async (req, res) => {
     const userId = res.locals.userId as string;
     const code = readMfaCode(req.body);
     if (!code)
@@ -900,19 +906,17 @@ userRouter.put(
                 .json({ detail: "base_url must be a string or null" });
         }
         const trimmed = typeof raw === "string" ? raw.trim() || null : null;
+        let normalized = trimmed;
         if (trimmed) {
-            let parsed: URL;
             try {
-                parsed = new URL(trimmed);
-            } catch {
+                normalized = await validatePublicUrl(trimmed, {
+                    label: "Custom LLM base URL",
+                    httpsOnly: true,
+                });
+            } catch (err) {
                 return void res
                     .status(400)
-                    .json({ detail: "base_url must be a valid URL" });
-            }
-            if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-                return void res
-                    .status(400)
-                    .json({ detail: "base_url must be an http(s) URL" });
+                    .json({ detail: errorMessage(err) });
             }
         }
         const db = createServerSupabase();
@@ -920,7 +924,7 @@ userRouter.put(
             const ensureError = await ensureProfileRow(db, userId);
             if (ensureError)
                 return void res.status(500).json({ detail: ensureError.message });
-            await saveCustomBaseUrl(userId, trimmed, db);
+            await saveCustomBaseUrl(userId, normalized, db);
             const { url, source } = await getCustomBaseUrl(userId, db);
             res.json({
                 customLlmBaseUrl: source === "user" ? url : null,

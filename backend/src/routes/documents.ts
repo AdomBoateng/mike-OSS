@@ -23,6 +23,7 @@ import {
 } from "../lib/documentVersions";
 import { ensureDocAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import { validateDocumentFile } from "../lib/fileValidation";
 
 export const documentsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
@@ -634,6 +635,10 @@ documentsRouter.post(
         detail: `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
       });
     }
+    const validation = await validateDocumentFile(file.buffer, suffix);
+    if (!validation.ok) {
+      return void res.status(400).json({ detail: validation.detail });
+    }
 
     // Peg the new version into a predictable /versions/:id path under the
     // existing document folder so ops can spot the history in storage.
@@ -848,6 +853,10 @@ documentsRouter.put(
       return void res.status(400).json({
         detail: `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
       });
+    }
+    const validation = await validateDocumentFile(file.buffer, suffix);
+    if (!validation.ok) {
+      return void res.status(400).json({ detail: validation.detail });
     }
     if (target.file_type && target.file_type !== suffix) {
       return void res.status(400).json({
@@ -1340,6 +1349,11 @@ async function handleDocumentUpload(
       .json({
         detail: `Unsupported file type: ${suffix}. Allowed: pdf, docx, doc`,
       });
+
+  const validation = await validateDocumentFile(file.buffer, suffix);
+  if (!validation.ok) {
+    return void res.status(400).json({ detail: validation.detail });
+  }
 
   const content = file.buffer;
   const { data: doc, error: insertErr } = await db

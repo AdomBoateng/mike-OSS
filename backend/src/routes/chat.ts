@@ -24,6 +24,7 @@ import {
     compactWithNotice,
     type ChatApiMessage,
 } from "../lib/contextCompaction";
+import { parseChatMessages } from "../lib/requestValidation";
 
 export const chatRouter = Router();
 
@@ -85,32 +86,6 @@ function parseOptionalChatId(value: unknown):
         return { ok: false, detail: "chat_id must be a non-empty string" };
     }
     return { ok: true, chatId: value.trim() };
-}
-
-function parseChatMessages(value: unknown):
-    | { ok: true; messages: ChatMessage[] }
-    | { ok: false; detail: string } {
-    if (!Array.isArray(value) || value.length === 0) {
-        return { ok: false, detail: "messages must be a non-empty array" };
-    }
-
-    for (const message of value) {
-        if (!message || typeof message !== "object" || Array.isArray(message)) {
-            return { ok: false, detail: "messages must contain objects" };
-        }
-        const row = message as Record<string, unknown>;
-        if (typeof row.role !== "string") {
-            return { ok: false, detail: "message.role must be a string" };
-        }
-        if (row.content !== null && typeof row.content !== "string") {
-            return {
-                ok: false,
-                detail: "message.content must be a string or null",
-            };
-        }
-    }
-
-    return { ok: true, messages: value as ChatMessage[] };
 }
 
 function parseOptionalModel(value: unknown):
@@ -632,7 +607,7 @@ chatRouter.post("/", requireAuth, async (req, res) => {
     });
 
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-store");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();

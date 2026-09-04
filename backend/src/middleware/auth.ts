@@ -2,26 +2,17 @@ import { Request, Response, NextFunction } from "express";
 import { verifySession } from "../lib/session";
 import { userHasVerifiedTotp } from "../lib/mfa";
 
-/**
- * Verify our own session token (issued by POST /auth/login after an LDAP bind)
- * and populate res.locals with the user identity.
- */
-export async function requireAuth(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
+function applySession(req: Request, res: Response): boolean {
   const auth = req.headers.authorization ?? "";
   if (!auth.startsWith("Bearer ")) {
     res.status(401).json({ detail: "Missing or invalid Authorization header" });
-    return;
+    return false;
   }
   const token = auth.slice(7).trim();
-
   const claims = verifySession(token);
   if (!claims) {
     res.status(401).json({ detail: "Invalid or expired token" });
-    return;
+    return false;
   }
 
   res.locals.userId = claims.sub;
@@ -29,6 +20,43 @@ export async function requireAuth(
   res.locals.ldapUid = claims.ldapUid ?? "";
   res.locals.token = token;
   res.locals.mfaVerified = claims.mfaVerified === true;
+  res.locals.mfaLoginRequired = claims.mfaLoginRequired;
+  return true;
+}
+
+/** Validate a session for the MFA status/challenge endpoints only. */
+export function requireSession(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (applySession(req, res)) next();
+}
+
+/**
+ * Verify our own session token (issued by POST /auth/login after an LDAP bind)
+ * and populate res.locals with the user identity.
+ */
+export function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  if (!applySession(req, res)) return;
+
+  // The React redirect is only UX. Enforce login-time MFA at the API boundary
+  // so a direct client cannot use the LDAP token before completing TOTP.
+  // Missing is an old-token state, so unverified legacy tokens fail closed.
+  if (
+    res.locals.mfaVerified !== true &&
+    res.locals.mfaLoginRequired !== false
+  ) {
+    res.status(403).json({
+      detail: "Verification required. Enter a code from your authenticator app.",
+      code: "mfa_verification_required",
+    });
+    return;
+  }
   next();
 }
 
