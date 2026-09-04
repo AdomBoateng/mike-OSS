@@ -16,7 +16,7 @@ Don't redo these.
   `.gitlab-ci.yml`.
 - The pipeline's `test` stage passes on `main`: `backend:test` (289 unit tests)
   and `frontend:build` are both green. `frontend:lint` fails and is
-  `allow_failure: true` on purpose — see [Appendix A](#appendix-a-known-issues).
+  `allow_failure: true` on purpose — see [Appendix A](#appendix-a--known-issues).
 - `secret_detection` passes.
 - GitLab runners exist and work. They run inside Kubernetes (the job logs show
   CoreDNS at `10.96.0.10`).
@@ -73,9 +73,16 @@ Five things, none of which the manifests create. Per environment.
    and LDAP *before* it binds a port, so a missing route shows up as a pod that
    never becomes ready with the reason in its logs — not as a mystery failure on
    someone's first upload.
-4. **DNS** for the hostname you will put in the overlay.
+4. **DNS** for the hostname you will put in the overlay — **one** hostname per
+   environment. See [Appendix D](#appendix-d--cookie-authentication) before
+   considering a separate API hostname; browser auth now makes that impossible,
+   not merely inconvenient.
 5. **A TLS certificate** as a Secret in the namespace (`mike-uat-tls` /
-   `mike-prod-tls`), or cert-manager configured to issue it.
+   `mike-prod-tls`), or cert-manager configured to issue it. **HTTPS is now
+   mandatory, including in UAT.** In production the session cookie is issued
+   with the `__Host-` prefix, which the browser refuses over plain HTTP — so an
+   HTTP deployment does not degrade, it fails: login appears to succeed and the
+   very next request is unauthenticated.
 
 **Check:** from a debug pod in the target namespace, confirm all five are
 reachable — `nc -vz <ldap-host> 389`, `curl -sI <s3-endpoint>`,
@@ -92,12 +99,15 @@ openssl rand -hex 32    # run three times
 
 | Variable | What it does | What rotating it breaks |
 | --- | --- | --- |
-| `SESSION_JWT_SECRET` | signs session JWTs | signs everyone out |
+| `SESSION_JWT_SECRET` | signs the session JWT carried in the HttpOnly cookie | signs everyone out |
 | `USER_API_KEYS_ENCRYPTION_SECRET` | AES-256-GCM for stored API keys and TOTP secrets | stored keys unreadable; **every user must re-enrol MFA** |
 | `DOWNLOAD_SIGNING_SECRET` | HMAC for `/download/:token` | every download link ever put in a chat transcript, because those tokens do not expire |
 
 **Sharing `SESSION_JWT_SECRET` between UAT and production means a UAT session
-token is accepted by production.** That is the one that matters most.
+token is accepted by production.** That is the one that matters most. Sessions
+are now also registered in `public.user_sessions`, so a stolen or stale token
+can be revoked centrally — but only within the environment that issued it. The
+shared-secret hole is not closed by the registry.
 
 The remaining credentials come from the services in Step 2:
 `DATABASE_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`,
@@ -248,12 +258,21 @@ kubectl -n mike-uat logs deployment/mike-backend --tail=50   # startup probe res
 curl -sS https://mike-uat.<host>/api/health                  # {"ok":true}
 curl -sS https://mike-uat.<host>/api/health/ready             # {"ok":true} = database reachable
 curl -sS https://mike-uat.<host>/env.js                       # window.__MIKE_API_BASE__="/api"
+curl -sS https://mike-uat.<host>/api/auth/session              # 401 with no cookie — this is correct
 ```
+
+That last 401 is the expected answer for a visitor with no session, not a
+fault. The browser makes the same call on every page load to rehydrate, so a
+401 in the console on the login page is normal.
 
 Then, in a browser, in this order — each one proves a different external
 dependency, and they fail independently:
 
-1. **Sign in.** Proves LDAP bind and the session JWT.
+1. **Sign in**, then open devtools → Application → Cookies. Proves the LDAP
+   bind, the session registry and the cookie chain. You must see
+   **`__Host-mike_session`** (HttpOnly, Secure) and `mike_csrf`. If sign-in
+   succeeds but the next request is unauthenticated, the browser rejected the
+   cookie — see [Appendix D](#appendix-d--cookie-authentication).
 2. **Upload a document.** Proves surf/S3 write and the presigned URL path.
 3. **Download it again.** Proves `DOWNLOAD_SIGNING_SECRET` and the token path.
 4. **Ask the assistant something that streams for several minutes** — a redraft
@@ -266,7 +285,7 @@ dependency, and they fail independently:
 **Step 4 is the one people skip and the one that fails.** If the answer stops
 mid-sentence after about a minute, or arrives all at once at the end instead of
 streaming, the ingress annotations did not take. See
-[Appendix B](#appendix-b-the-streaming-annotations).
+[Appendix B](#appendix-b--the-streaming-annotations).
 
 ## Step 10 — SearXNG (optional)
 
@@ -368,6 +387,13 @@ and delivers it in one lump at the end.
 **If you use a controller other than nginx, these have equivalents and you must
 set them.** This is the single most likely way a deploy that "works" is unusable.
 
+The ingress must also **pass `Cookie`, `Set-Cookie` and the `X-CSRF-Token`
+header through untouched**, and preserve the original `Host` and
+`X-Forwarded-Proto`. nginx-ingress does all of this by default; a proxy in front
+of it configured to strip or rewrite headers will break authentication in a way
+that looks like an application bug. See
+[Appendix D](#appendix-d--cookie-authentication).
+
 ## Appendix C — What is deliberately not automated
 
 - **Secrets** are never created by CI. A compromised runner should not be able to
@@ -377,3 +403,66 @@ set them.** This is the single most likely way a deploy that "works" is unusable
 - **`deploy:uat` runs on every merge to `main`.** If that is too eager for your
   release process, change the rule in `.gitlab-ci.yml` to require a tag as
   production does.
+
+## Appendix D — Cookie authentication
+
+Browser sessions moved from a `localStorage` Bearer token to a revocable
+HttpOnly cookie. Four consequences for deployment, none of them optional.
+
+**One hostname is now required, not preferred.** In production the session
+cookie is named `__Host-mike_session`. That prefix is enforced by the browser:
+the cookie must be `Secure`, path `/`, and carry **no `Domain` attribute** —
+which makes it host-only and impossible to share across subdomains. A separate
+`mike-api.<host>` would simply never receive it. The `/api` path-routing in
+`k8s/base/ingress.yaml` is what makes this work; do not split it.
+
+**HTTPS is required, including in UAT.** `cookiesAreSecure()` returns true
+whenever `NODE_ENV=production`, so the cookie is issued `Secure` and a browser
+on plain HTTP silently discards it. The symptom is specific and misleading:
+login returns 200, then every subsequent request is unauthenticated. There is a
+`COOKIE_SECURE=false` escape hatch for local work — **never set it in a
+deployed environment**; it turns the session cookie into one any network
+observer can lift.
+
+**`FRONTEND_URL` must be exact origins.** Production now *refuses to start* if
+it is missing, wildcard, malformed, or path-bearing (`lib/config.ts`). `"*"` was
+acceptable when auth was a Bearer header; with ambient cookies it would let any
+site drive an authenticated session. The overlays already set it to the single
+public origin — keep it that way.
+
+**Unsafe requests need CSRF.** A second cookie, `mike_csrf`, is issued
+alongside, and non-GET requests must echo it in an `X-CSRF-Token` header. The
+frontend does this itself; it matters here only in that no proxy may strip that
+header.
+
+### The new table
+
+Sessions live in `public.user_sessions`, added by
+`backend/migrations/20260904_user_sessions.sql`. Logout revokes the row, so it
+takes effect across every replica rather than only the pod that served the
+request — which is why revocation works at all with two backend replicas.
+
+A database that does not have this table produces **HTTP 503 "Authentication
+service unavailable"** on every login attempt. LDAP is fine, the password is
+fine, and the log line is `[auth/login] failed to create session`. This is the
+normal symptom of deploying the new code against a database that was not
+migrated. It was hit on the development database during this work.
+
+**Do not reach for `--baseline` to fix it.** `--baseline` records every
+migration as applied *without running any of them*, so on a database that is
+genuinely behind it writes down a lie and the missing table stays missing. It is
+only for a database already current with the build. When a database is behind
+and has no ledger, create `public.schema_migrations` and insert only the
+filenames it really has had, then run the migration normally so it applies the
+remainder. That is the second branch in
+[KUBERNETES.md](KUBERNETES.md#the-database), and it is the branch the
+development database needed: it was three migrations behind
+(`20260902_documents_overview_rpc`, `20260903_02_tabular_model_drop_gemini_default`,
+`20260904_user_sessions`) with no ledger at all. `--dry-run` names exactly what
+would be applied and changes nothing, so run it first.
+
+`ALLOW_BEARER_TOKEN_RESPONSE` is set to `"false"` in `k8s/base/configmap.yaml`
+and should stay there. Bearer headers are still *accepted* so pre-migration
+sessions can exchange themselves at `/api/auth/session`, but the login response
+no longer hands a token to JavaScript. Setting it to `"true"` restores the old
+behaviour and gives up most of what the change bought.
